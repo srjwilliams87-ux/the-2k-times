@@ -4,68 +4,31 @@ from urllib.parse import urlparse
 
 import requests
 from flask import Flask, request, Response
+from readability import Document
+from bs4 import BeautifulSoup
 
 app = Flask(__name__)
 
-# Optional: allow only these domains (comma-separated), blank = allow all
 ALLOWED_DOMAINS = [d.strip().lower() for d in (os.environ.get("ALLOWED_DOMAINS", "")).split(",") if d.strip()]
-
-# Optional: set a custom title in the reader header
 READER_BRAND = os.environ.get("READER_BRAND", "The 2k Times Reader")
 
 USER_AGENT = os.environ.get(
     "READER_USER_AGENT",
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
-    "(KHTML, like Gecko) Chrome/120.0 Safari/537.36",
+    "(KHTML, like Gecko) Chrome/123.0 Safari/537.36",
 )
 
-TIMEOUT = int(os.environ.get("READER_TIMEOUT_SECONDS", "12"))
+TIMEOUT = int(os.environ.get("READER_TIMEOUT_SECONDS", "15"))
 
 
 def is_allowed(url: str) -> bool:
     if not ALLOWED_DOMAINS:
         return True
     try:
-        host = urlparse(url).netloc.lower()
-        host = host.split(":")[0]
+        host = urlparse(url).netloc.lower().split(":")[0].replace("www.", "")
         return any(host == d or host.endswith("." + d) for d in ALLOWED_DOMAINS)
     except Exception:
         return False
-
-
-def jina_clean_text(url: str) -> str:
-    """
-    Fetch "clean text" using r.jina.ai, then lightly sanitize.
-    This avoids ad-heavy pages and is very reliable.
-    """
-    url = url.strip()
-    if not url.startswith("http://") and not url.startswith("https://"):
-        raise ValueError("URL must start with http:// or https://")
-
-    # r.jina.ai expects full URL appended
-    clean_url = f"https://r.jina.ai/{url}"
-    r = requests.get(clean_url, timeout=TIMEOUT, headers={"User-Agent": USER_AGENT})
-    r.raise_for_status()
-    text = r.text
-
-    # Basic cleanup: collapse excessive blank lines and trim
-    text = text.replace("\r\n", "\n")
-    text = re.sub(r"\n{4,}", "\n\n\n", text).strip()
-
-    return text
-
-
-def guess_title_from_text(text: str) -> str:
-    """
-    r.jina.ai output usually starts with a title-ish line.
-    We'll pick the first non-empty line that's not a nav/header junk.
-    """
-    lines = [ln.strip() for ln in text.split("\n") if ln.strip()]
-    for ln in lines[:25]:
-        bad = ("skip to content", "home", "news", "subscribe", "sign in")
-        if len(ln) >= 12 and not any(b in ln.lower() for b in bad):
-            return ln[:140]
-    return "Article"
 
 
 def html_escape(s: str) -> str:
@@ -79,29 +42,83 @@ def html_escape(s: str) -> str:
     )
 
 
-def text_to_html_paragraphs(text: str) -> str:
+def clean_extracted_html(article_html: str) -> str:
     """
-    Convert plain text to readable HTML blocks:
-    - preserve paragraphs
-    - preserve short lines as headings-ish by making them bold
+    Clean up extracted HTML to keep it readable and safe.
     """
-    blocks = []
-    paragraphs = re.split(r"\n\s*\n", text)
+    soup = BeautifulSoup(article_html, "html.parser")
 
-    for p in paragraphs:
-        p = p.strip()
-        if not p:
-            continue
+    # Remove scripts/styles
+    for tag in soup(["script", "style", "noscript"]):
+        tag.decompose()
 
-        # If it looks like a short heading (all caps / very short)
-        if len(p) < 80 and (p.isupper() or p.endswith(":")):
-            blocks.append(f"<h2>{html_escape(p)}</h2>")
-            continue
+    # Kill empty tags
+    for tag in soup.find_all():
+        if tag.name in ["div", "span"] and not tag.get_text(strip=True):
+            tag.decompose()
 
-        # Otherwise normal paragraph
-        blocks.append(f"<p>{html_escape(p)}</p>")
+    # Keep basic formatting only
+    allowed = {"p", "h1", "h2", "h3", "blockquote", "ul", "ol", "li", "strong", "em", "a"}
+    for tag in soup.find_all(True):
+        if tag.name not in allowed:
+            tag.unwrap()
+        else:
+            # strip noisy attributes
+            tag.attrs = {k: v for k, v in tag.attrs.items() if k in ["href"]}
 
-    return "\n".join(blocks)
+    # Ensure links open safely
+    for a in soup.find_all("a"):
+        a.attrs["rel"] = "noopener noreferrer"
+        a.attrs["target"] = "_blank"
+
+    html = str(soup)
+
+    # Collapse repeated whitespace
+    html = re.sub(r"\n{3,}", "\n\n", html).strip()
+    return html
+
+
+def extract_readable(url: str):
+    """
+    Fetch the page and extract main content via Readability.
+    Returns (title, html_body).
+    """
+    r = requests.get(
+        url,
+        timeout=TIMEOUT,
+        headers={
+            "User-Agent": USER_AGENT,
+            "Accept": "text/html,application/xhtml+xml",
+            "Accept-Language": "en-GB,en;q=0.9",
+        },
+    )
+    r.raise_for_status()
+
+    doc = Document(r.text)
+    title = doc.short_title() or "Article"
+    content_html = doc.summary(html_partial=True)
+
+    # Clean extracted HTML
+    content_html = clean_extracted_html(content_html)
+
+    # Fallback if content is too empty
+    if len(BeautifulSoup(content_html, "html.parser").get_text(" ", strip=True)) < 400:
+        soup = BeautifulSoup(r.text, "html.parser")
+        # remove obvious junk
+        for tag in soup(["script", "style", "noscript", "header", "footer", "nav"]):
+            tag.decompose()
+        text = soup.get_text("\n", strip=True)
+        text = re.sub(r"\n{3,}", "\n\n", text)
+        # Convert to simple paragraphs
+        paras = []
+        for p in text.split("\n\n"):
+            p = p.strip()
+            if len(p) < 40:
+                continue
+            paras.append(f"<p>{html_escape(p)}</p>")
+        content_html = "\n".join(paras[:60])  # cap so it doesn't go insane
+
+    return title[:160], content_html
 
 
 @app.get("/health")
@@ -122,13 +139,8 @@ def read():
         return Response("That domain is not allowed.", status=403)
 
     try:
-        clean_text = jina_clean_text(url)
-        title = guess_title_from_text(clean_text)
-        body_html = text_to_html_paragraphs(clean_text)
-
+        title, body_html = extract_readable(url)
         host = urlparse(url).netloc.replace("www.", "")
-        safe_title = html_escape(title)
-        safe_url = html_escape(url)
 
         html = f"""\
 <!doctype html>
@@ -136,7 +148,7 @@ def read():
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>{safe_title}</title>
+  <title>{html_escape(title)}</title>
   <style>
     :root {{
       --bg: #0f0f10;
@@ -161,10 +173,10 @@ def read():
       background: var(--bg);
       color: var(--text);
       font-family: ui-serif, Georgia, "Times New Roman", Times, serif;
-      line-height: 1.7;
+      line-height: 1.75;
     }}
     .wrap {{
-      max-width: 820px;
+      max-width: 860px;
       margin: 0 auto;
       padding: 18px;
     }}
@@ -178,14 +190,14 @@ def read():
       font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
       font-weight: 800;
       letter-spacing: 0.5px;
-      font-size: 14px;
+      font-size: 13px;
       color: var(--muted);
       margin-bottom: 10px;
       text-transform: uppercase;
     }}
     h1 {{
-      font-size: 30px;
-      line-height: 1.2;
+      font-size: 32px;
+      line-height: 1.15;
       margin: 0 0 10px 0;
       font-weight: 800;
     }}
@@ -212,12 +224,18 @@ def read():
       margin: 0 0 14px 0;
       font-size: 18px;
     }}
-    h2 {{
-      margin: 18px 0 10px 0;
+    blockquote {{
+      margin: 18px 0;
+      padding: 10px 14px;
+      border-left: 3px solid var(--rule);
+      color: var(--muted);
+    }}
+    a {{
+      color: var(--link);
+    }}
+    ul, ol {{
+      margin: 0 0 14px 22px;
       font-size: 18px;
-      letter-spacing: 0.5px;
-      text-transform: uppercase;
-      font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
     }}
     .footer {{
       margin: 18px 0 10px 0;
@@ -231,10 +249,10 @@ def read():
   <div class="wrap">
     <div class="card">
       <div class="brand">{html_escape(READER_BRAND)}</div>
-      <h1>{safe_title}</h1>
+      <h1>{html_escape(title)}</h1>
       <div class="meta">
         Source: <b>{html_escape(host)}</b> ·
-        <a href="{safe_url}" rel="noopener noreferrer" target="_blank">Open original</a>
+        <a href="{html_escape(url)}" rel="noopener noreferrer" target="_blank">Open original</a>
       </div>
       <hr />
       {body_html}
