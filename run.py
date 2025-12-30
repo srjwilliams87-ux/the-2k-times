@@ -1,36 +1,34 @@
 import os
-import requests
+import smtplib
+from email.message import EmailMessage
 
-print("The 2k Times — sending test email")
+print("The 2k Times — sending test email (SMTP)")
 
-MAILGUN_API_KEY = os.environ.get("MAILGUN_API_KEY")
 MAILGUN_DOMAIN = os.environ.get("MAILGUN_DOMAIN")
 EMAIL_TO = os.environ.get("EMAIL_TO")
-EMAIL_FROM_NAME = os.environ.get("EMAIL_FROM_NAME")
+EMAIL_FROM_NAME = os.environ.get("EMAIL_FROM_NAME", "The 2k Times")
 
-# Simple sanity checks (helps debugging)
-if not MAILGUN_API_KEY:
-    raise SystemExit("Missing MAILGUN_API_KEY in Render environment variables")
+SMTP_USER = os.environ.get("MAILGUN_SMTP_USER")
+SMTP_PASS = os.environ.get("MAILGUN_SMTP_PASS")
+
 if not MAILGUN_DOMAIN:
-    raise SystemExit("Missing MAILGUN_DOMAIN in Render environment variables")
+    raise SystemExit("Missing MAILGUN_DOMAIN")
 if not EMAIL_TO:
-    raise SystemExit("Missing EMAIL_TO in Render environment variables")
-if not EMAIL_FROM_NAME:
-    EMAIL_FROM_NAME = "The 2k Times"
+    raise SystemExit("Missing EMAIL_TO")
+if not SMTP_USER:
+    raise SystemExit("Missing MAILGUN_SMTP_USER")
+if not SMTP_PASS:
+    raise SystemExit("Missing MAILGUN_SMTP_PASS")
 
-headers = {"Authorization": f"Bearer {MAILGUN_API_KEY}"}
+msg = EmailMessage()
+msg["Subject"] = "The 2k Times — Test Email"
+msg["From"] = f"{EMAIL_FROM_NAME} <postmaster@{MAILGUN_DOMAIN}>"
+msg["To"] = EMAIL_TO
+msg.set_content("If you’re reading this, the daily newspaper robot works.")
 
-response = requests.post(
-    f"https://api.mailgun.net/v3/{MAILGUN_DOMAIN}/messages",
-    headers=headers,
-    data={
-        "from": f"{EMAIL_FROM_NAME} <postmaster@{MAILGUN_DOMAIN}>",
-        "to": EMAIL_TO,
-        "subject": "The 2k Times — Test Email",
-        "text": "If you’re reading this, the daily newspaper robot works."
-    }
-)
+with smtplib.SMTP("smtp.mailgun.org", 587) as server:
+    server.starttls()
+    server.login(SMTP_USER, SMTP_PASS)
+    server.send_message(msg)
 
-print("Mailgun response:", response.status_code)
-print(response.text)
-
+print("SMTP send: OK")
