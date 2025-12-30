@@ -28,22 +28,17 @@ now_uk = datetime.now(TZ)
 window_end = now_uk
 window_start = now_uk - timedelta(hours=24)
 
-# Subject: The 2k Times, dd.mm.yyyy
 subject = f"The 2k Times, {now_uk.strftime('%d.%m.%Y')}"
 
-# ----------------------------
-# World Headlines sources (RSS)
-# ----------------------------
 WORLD_FEEDS = [
     "https://feeds.bbci.co.uk/news/world/rss.xml",
     "https://feeds.reuters.com/Reuters/worldNews",
 ]
 
 # ----------------------------
-# Helpers (text cleanup + summary)
+# Helpers
 # ----------------------------
 def clean_text_link(url: str) -> str:
-    """Creates a clean-text reader-friendly URL (no popups/ads)."""
     url = (url or "").strip()
     if url.startswith("http://"):
         return "https://r.jina.ai/http://" + url[len("http://") :]
@@ -60,10 +55,6 @@ def strip_html(s: str) -> str:
     return s
 
 def remove_rss_noise(s: str) -> str:
-    """
-    BBC sometimes includes metadata/noise in RSS summaries.
-    Remove common noisy labels, image refs, embedded URLs, etc.
-    """
     s = strip_html(s)
 
     noise_patterns = [
@@ -76,34 +67,25 @@ def remove_rss_noise(s: str) -> str:
     for pat in noise_patterns:
         s = re.sub(pat, " ", s, flags=re.IGNORECASE)
 
-    # Remove image markdown and [Image ...] tokens
-    s = re.sub(r"!\[.*?\]\(.*?\)", " ", s)
+    s = re.sub(r"!\[.*?\]\(.*?\)", " ", s)                      # image markdown
     s = re.sub(r"\[Image\s*\d+.*?\]", " ", s, flags=re.IGNORECASE)
-
-    # Remove any URLs inside summary (we provide links separately)
-    s = re.sub(r"https?://\S+", " ", s)
-
+    s = re.sub(r"https?://\S+", " ", s)                          # embedded URLs
     s = re.sub(r"\s+", " ", s).strip()
     return s
 
 def two_sentence_summary(rss_summary: str) -> str:
-    """Return a clean 2-sentence summary; fallback to a short trim."""
     s = remove_rss_noise(rss_summary)
     if not s:
         return "Summary unavailable."
-
     sentences = re.split(r"(?<=[.!?])\s+", s)
     sentences = [x.strip() for x in sentences if len(x.strip()) > 20]
-
     if len(sentences) >= 2:
         return f"{sentences[0]} {sentences[1]}"
     if len(sentences) == 1:
         return sentences[0]
-
-    return (s[:240].rstrip() + "…") if len(s) > 240 else s
+    return (s[:220].rstrip() + "…") if len(s) > 220 else s
 
 def parse_entry_time(entry):
-    """Convert RSS publish time to timezone-aware UK datetime."""
     if hasattr(entry, "published_parsed") and entry.published_parsed:
         return datetime(*entry.published_parsed[:6]).replace(tzinfo=ZoneInfo("UTC")).astimezone(TZ)
     if hasattr(entry, "updated_parsed") and entry.updated_parsed:
@@ -129,7 +111,6 @@ def collect_candidates(feed_urls):
             published_dt = parse_entry_time(e)
             if not published_dt:
                 continue
-
             if not (window_start <= published_dt <= window_end):
                 continue
 
@@ -139,19 +120,15 @@ def collect_candidates(feed_urls):
             elif hasattr(e, "description") and e.description:
                 rss_summary = e.description
 
-            items.append(
-                {
-                    "title": title,
-                    "link": link,
-                    "published": published_dt,
-                    "rss_summary": rss_summary,
-                }
-            )
+            items.append({
+                "title": title,
+                "link": link,
+                "published": published_dt,
+                "rss_summary": rss_summary,
+            })
 
-    # newest first
     items.sort(key=lambda x: x["published"], reverse=True)
 
-    # dedupe by title
     seen = set()
     out = []
     for it in items:
@@ -163,10 +140,9 @@ def collect_candidates(feed_urls):
     return out
 
 # ----------------------------
-# Helpers (HTML newspaper)
+# HTML builder (Gmail-friendly)
 # ----------------------------
 def esc(s: str) -> str:
-    """Minimal HTML escaping."""
     return (
         (s or "")
         .replace("&", "&amp;")
@@ -178,87 +154,70 @@ def esc(s: str) -> str:
 
 def build_html_newspaper(subject_line: str, world_items: list) -> str:
     date_str = subject_line.replace("The 2k Times, ", "")
+    rows = []
+
+    rows.append(f"""
+      <tr><td style="padding:18px 18px 10px 18px;border-bottom:2px solid #111;">
+        <div style="font-size:30px;font-weight:800;margin:0;">The 2k Times</div>
+        <div style="font-size:13px;color:#555;margin-top:6px;">{esc(date_str)} • Daily Edition</div>
+      </td></tr>
+    """)
+
+    rows.append(f"""
+      <tr><td style="padding:16px 18px 10px 18px;">
+        <div style="font-size:14px;font-weight:800;letter-spacing:1px;margin:0 0 12px 0;">WORLD HEADLINES</div>
+      </td></tr>
+    """)
 
     if not world_items:
-        world_html = "<p style='margin:0;color:#444;'>No qualifying world headlines in the last 24 hours.</p>"
+        rows.append(f"""
+          <tr><td style="padding:0 18px 16px 18px;color:#444;">
+            No qualifying world headlines in the last 24 hours.
+          </td></tr>
+        """)
     else:
-        cards = []
         for i, it in enumerate(world_items, start=1):
-            title = esc(it["title"])
-            summary = esc(it["summary"])
-            article = esc(it["article_url"])
-            clean = esc(it["clean_url"])
-
-            cards.append(
-                f"""
-                <div style="padding:14px 0;border-top:1px solid #e6e6e6;">
-                  <div style="font-size:16px;line-height:1.35;font-weight:700;margin:0 0 6px 0;">
-                    {i}) {title}
-                  </div>
-                  <div style="font-size:14px;line-height:1.55;color:#222;margin:0 0 10px 0;">
-                    {summary}
-                  </div>
-                  <div style="font-size:13px;line-height:1.6;margin:0;">
-                    <span style="font-weight:700;">Article Link:</span>
-                    <a href="{article}" style="color:#0b57d0;text-decoration:underline;">{article}</a>
-                  </div>
-                  <div style="font-size:13px;line-height:1.6;margin:0;">
-                    <span style="font-weight:700;">Clean Text Link:</span>
-                    <a href="{clean}" style="color:#0b57d0;text-decoration:underline;">{clean}</a>
-                  </div>
+            rows.append(f"""
+              <tr><td style="padding:0 18px 16px 18px;border-top:1px solid #e6e6e6;">
+                <div style="padding-top:12px;font-size:16px;font-weight:700;line-height:1.35;">{i}) {esc(it['title'])}</div>
+                <div style="margin-top:6px;font-size:14px;line-height:1.55;color:#222;">{esc(it['summary'])}</div>
+                <div style="margin-top:10px;font-size:13px;line-height:1.6;">
+                  <b>Article Link:</b> <a href="{esc(it['article_url'])}" style="color:#0b57d0;text-decoration:underline;">{esc(it['article_url'])}</a>
                 </div>
-                """.strip()
-            )
-        world_html = "\n".join(cards)
+                <div style="margin-top:4px;font-size:13px;line-height:1.6;">
+                  <b>Clean Text Link:</b> <a href="{esc(it['clean_url'])}" style="color:#0b57d0;text-decoration:underline;">{esc(it['clean_url'])}</a>
+                </div>
+              </td></tr>
+            """)
+
+    # Placeholder sections
+    for section in ["UK POLITICS", "RUGBY UNION", "PUNK ROCK"]:
+        rows.append(f"""
+          <tr><td style="padding:16px 18px;border-top:1px solid #eee;">
+            <div style="font-size:14px;font-weight:800;letter-spacing:1px;margin:0 0 10px 0;">{section}</div>
+            <div style="color:#444;">(Placeholder — next step)</div>
+          </td></tr>
+        """)
+
+    rows.append("""
+      <tr><td style="padding:12px 18px;border-top:1px solid #eee;color:#777;font-size:12px;">
+        You’re receiving this because you subscribed to The 2k Times.
+      </td></tr>
+    """)
 
     return f"""\
-<!doctype html>
 <html>
+  <head><meta charset="utf-8"></head>
   <body style="margin:0;padding:0;background:#f7f7f7;">
-    <div style="max-width:760px;margin:0 auto;padding:18px;">
-      <div style="background:#ffffff;border:1px solid #e6e6e6;border-radius:14px;overflow:hidden;">
-        <div style="padding:18px 20px;border-bottom:2px solid #111;">
-          <div style="font-size:30px;letter-spacing:0.5px;font-weight:800;margin:0;color:#111;">
-            The 2k Times
-          </div>
-          <div style="font-size:13px;color:#555;margin-top:6px;">
-            {esc(date_str)} • Daily Edition
-          </div>
-        </div>
-
-        <div style="padding:18px 20px;">
-          <div style="font-size:14px;font-weight:800;letter-spacing:1px;color:#111;margin:0 0 10px 0;">
-            WORLD HEADLINES
-          </div>
-          {world_html}
-        </div>
-
-        <div style="padding:18px 20px;border-top:1px solid #eee;">
-          <div style="font-size:14px;font-weight:800;letter-spacing:1px;color:#111;margin:0 0 10px 0;">
-            UK POLITICS
-          </div>
-          <p style="margin:0;color:#444;">(Placeholder — next step)</p>
-        </div>
-
-        <div style="padding:18px 20px;border-top:1px solid #eee;">
-          <div style="font-size:14px;font-weight:800;letter-spacing:1px;color:#111;margin:0 0 10px 0;">
-            RUGBY UNION
-          </div>
-          <p style="margin:0;color:#444;">(Placeholder — next step)</p>
-        </div>
-
-        <div style="padding:18px 20px;border-top:1px solid #eee;">
-          <div style="font-size:14px;font-weight:800;letter-spacing:1px;color:#111;margin:0 0 10px 0;">
-            PUNK ROCK
-          </div>
-          <p style="margin:0;color:#444;">(Placeholder — next step)</p>
-        </div>
-
-        <div style="padding:14px 20px;border-top:1px solid #eee;color:#777;font-size:12px;">
-          You’re receiving this because you subscribed to The 2k Times.
-        </div>
-      </div>
-    </div>
+    <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background:#f7f7f7;padding:18px 0;">
+      <tr>
+        <td align="center">
+          <table role="presentation" width="720" cellspacing="0" cellpadding="0" style="background:#ffffff;border:1px solid #e6e6e6;border-radius:14px;overflow:hidden;">
+            {''.join(rows)}
+          </table>
+        </td>
+      </tr>
+    </table>
   </body>
 </html>
 """
@@ -267,40 +226,36 @@ def build_html_newspaper(subject_line: str, world_items: list) -> str:
 # Build World Headlines (top 3)
 # ----------------------------
 world_raw = collect_candidates(WORLD_FEEDS)[:3]
-
-world_structured = []
+world_items = []
 for it in world_raw:
     article_url = it["link"].strip()
-    world_structured.append(
-        {
-            "title": it["title"],
-            "summary": two_sentence_summary(it["rss_summary"]),
-            "article_url": article_url,
-            "clean_url": clean_text_link(article_url),
-        }
-    )
+    world_items.append({
+        "title": it["title"],
+        "summary": two_sentence_summary(it["rss_summary"]),
+        "article_url": article_url,
+        "clean_url": clean_text_link(article_url),
+    })
 
-# Plain-text version (clean + consistent)
-lines = ["WORLD HEADLINES"]
-if not world_structured:
-    lines.append("(No qualifying world headlines in the last 24 hours.)")
+# Plain-text version (fallback)
+plain_lines = ["WORLD HEADLINES"]
+if not world_items:
+    plain_lines.append("(No qualifying world headlines in the last 24 hours.)")
 else:
-    for idx, it in enumerate(world_structured, start=1):
-        lines.append(f"{idx}) {it['title']}")
-        lines.append(it["summary"])
-        lines.append(f"Article Link: {it['article_url']}")
-        lines.append(f"Clean Text Link: {it['clean_url']}")
-        lines.append("")
+    for idx, it in enumerate(world_items, start=1):
+        plain_lines.append(f"{idx}) {it['title']}")
+        plain_lines.append(it["summary"])
+        plain_lines.append(f"Article Link: {it['article_url']}")
+        plain_lines.append(f"Clean Text Link: {it['clean_url']}")
+        plain_lines.append("")
 
 plain_body = (
-    "\n".join(lines).strip()
+    "\n".join(plain_lines).strip()
     + "\n\nUK POLITICS\n(Placeholder — next step)\n\n"
     + "RUGBY UNION\n(Placeholder — next step)\n\n"
     + "PUNK ROCK\n(Placeholder — next step)\n"
 )
 
-# HTML “newspaper” version
-html_body = build_html_newspaper(subject, world_structured)
+html_body = build_html_newspaper(subject, world_items)
 
 # ----------------------------
 # Send email via Mailgun SMTP
@@ -310,7 +265,6 @@ msg["Subject"] = subject
 msg["From"] = f"{EMAIL_FROM_NAME} <postmaster@{MAILGUN_DOMAIN}>"
 msg["To"] = EMAIL_TO
 
-# Add both versions (HTML + plain text fallback)
 msg.set_content(plain_body)
 msg.add_alternative(html_body, subtype="html")
 
@@ -320,5 +274,5 @@ with smtplib.SMTP("smtp.mailgun.org", 587) as server:
     server.send_message(msg)
 
 print("Sent edition:", subject)
-print("World headlines included:", len(world_structured))
+print("World headlines included:", len(world_items))
 print("Window (UK):", window_start.isoformat(), "→", window_end.isoformat())
