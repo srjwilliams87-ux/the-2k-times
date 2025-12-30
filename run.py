@@ -24,8 +24,6 @@ TZ = ZoneInfo("Europe/London")
 
 # ----------------------------
 # Time window: previous 24 hours (UK time)
-# Locked rule: 05:30 yesterday → 05:29 today, relative to send time
-# Implementation: always take the last 24 hours at run time (UK)
 # ----------------------------
 now_uk = datetime.now(TZ)
 window_end = now_uk
@@ -38,18 +36,15 @@ subject = f"The 2k Times, {now_uk.strftime('%d.%m.%Y')}"
 # World Headlines sources (RSS)
 # ----------------------------
 WORLD_FEEDS = [
-    "https://feeds.bbci.co.uk/news/world/rss.xml",          # BBC World
-    "https://feeds.reuters.com/Reuters/worldNews",          # Reuters World
+    "https://feeds.bbci.co.uk/news/world/rss.xml",
+    "https://feeds.reuters.com/Reuters/worldNews",
 ]
 
 # ----------------------------
 # Helpers
 # ----------------------------
 def clean_text_link(url: str) -> str:
-    """
-    Clean-text fallback link: converts any URL into a very readable text-first version.
-    This avoids ads/popups and works well on mobile.
-    """
+    """Creates a clean-text reader-friendly URL."""
     url = url.strip()
     if url.startswith("http://"):
         return "https://r.jina.ai/http://" + url[len("http://"):]
@@ -60,53 +55,76 @@ def clean_text_link(url: str) -> str:
 def strip_html(s: str) -> str:
     if not s:
         return ""
-    # Remove HTML tags
-    s = re.sub(r"<[^>]+>", "", s)
-    # Decode common HTML entities crudely
+    s = re.sub(r"<[^>]+>", " ", s)
     s = s.replace("&amp;", "&").replace("&quot;", '"').replace("&#39;", "'")
-    # Normalize whitespace
     s = re.sub(r"\s+", " ", s).strip()
     return s
 
-def medium_summary_from_rss(rss_summary: str) -> str:
+def remove_rss_noise(s: str) -> str:
     """
-    Creates a tidy 4–5 sentence summary from RSS summary text.
-    Much cleaner than summarising from full article pages (which include nav/menus/etc).
+    BBC sometimes includes a lot of metadata in RSS summaries (Title/URL/Published/Markdown Content etc).
+    This removes common noisy labels and trims anything that looks like site nav / image refs.
     """
-    s = strip_html(rss_summary)
+    s = strip_html(s)
+
+    # Remove common noisy labels
+    noise_patterns = [
+        r"\bTitle:\s*.*?(?=URL\s*Source:|Published\s*Time:|Markdown\s*Content:|$)",
+        r"\bURL\s*Source:\s*https?://\S+",
+        r"\bPublished\s*Time:\s*\S+",
+        r"\bMarkdown\s*Content:\s*",
+        r"\[Skip to content\]",
+    ]
+    for pat in noise_patterns:
+        s = re.sub(pat, " ", s, flags=re.IGNORECASE)
+
+    # Remove image markdown like ![Image ...](url) or [Image ...]
+    s = re.sub(r"!\[.*?\]\(.*?\)", " ", s)
+    s = re.sub(r"\[Image\s*\d+.*?\]", " ", s, flags=re.IGNORECASE)
+
+    # Remove leftover URLs inside the summary (we provide links separately)
+    s = re.sub(r"https?://\S+", " ", s)
+
+    # Final whitespace normalisation
+    s = re.sub(r"\s+", " ", s).strip()
+    return s
+
+def two_sentence_summary(rss_summary: str) -> str:
+    """
+    Returns a clean 2-sentence summary.
+    Falls back to first ~240 chars if sentence splitting fails.
+    """
+    s = remove_rss_noise(rss_summary)
     if not s:
-        return "Summary unavailable. Use the clean-text link to read the full story."
+        return "Summary unavailable."
 
-    # Split into sentences (simple, works well enough for news briefs)
+    # Sentence split
     sentences = re.split(r"(?<=[.!?])\s+", s)
-    sentences = [x.strip() for x in sentences if len(x.strip()) > 25]
+    sentences = [x.strip() for x in sentences if len(x.strip()) > 20]
 
-    # Take up to 5 sentences for "Medium"
-    picked = sentences[:5]
-    return " ".join(picked) if picked else s
+    if len(sentences) >= 2:
+        return f"{sentences[0]} {sentences[1]}"
+    if len(sentences) == 1:
+        return sentences[0]
+
+    # Fallback: hard trim
+    return (s[:240].rstrip() + "…") if len(s) > 240 else s
 
 def parse_entry_time(entry) -> datetime | None:
-    """
-    Converts RSS publish time to timezone-aware UK datetime.
-    """
     if hasattr(entry, "published_parsed") and entry.published_parsed:
-        dt = datetime(*entry.published_parsed[:6]).replace(tzinfo=ZoneInfo("UTC")).astimezone(TZ)
-        return dt
+        return datetime(*entry.published_parsed[:6]).replace(tzinfo=ZoneInfo("UTC")).astimezone(TZ)
     if hasattr(entry, "updated_parsed") and entry.updated_parsed:
-        dt = datetime(*entry.updated_parsed[:6]).replace(tzinfo=ZoneInfo("UTC")).astimezone(TZ)
-        return dt
+        return datetime(*entry.updated_parsed[:6]).replace(tzinfo=ZoneInfo("UTC")).astimezone(TZ)
     return None
 
 def looks_like_low_value(title: str) -> bool:
     t = title.lower()
-    bad_words = ["live", "minute-by-minute", "as it happened"]
-    return any(w in t for w in bad_words)
+    return any(w in t for w in ["live", "minute-by-minute", "as it happened"])
 
-def collect_world_candidates():
+def collect_candidates(feed_urls):
     items = []
-    for feed_url in WORLD_FEEDS:
+    for feed_url in feed_urls:
         feed = feedparser.parse(feed_url)
-
         for e in feed.entries:
             title = getattr(e, "title", "").strip()
             link = getattr(e, "link", "").strip()
@@ -119,12 +137,10 @@ def collect_world_candidates():
             if not published_dt:
                 continue
 
-            # Filter to previous 24 hours (UK time)
             if not (window_start <= published_dt <= window_end):
                 continue
 
             rss_summary = ""
-            # RSS feeds differ in which field is present
             if hasattr(e, "summary") and e.summary:
                 rss_summary = e.summary
             elif hasattr(e, "description") and e.description:
@@ -135,48 +151,48 @@ def collect_world_candidates():
                 "link": link,
                 "published": published_dt,
                 "rss_summary": rss_summary,
-                "source_feed": feed_url,
             })
 
-    # Sort newest first
+    # newest first
     items.sort(key=lambda x: x["published"], reverse=True)
 
-    # De-dupe by title (simple)
+    # dedupe by title
     seen = set()
-    deduped = []
+    out = []
     for it in items:
         key = it["title"].lower()
         if key in seen:
             continue
         seen.add(key)
-        deduped.append(it)
-
-    return deduped
+        out.append(it)
+    return out
 
 # ----------------------------
-# Build World Headlines section
+# Build World Headlines section (top 3)
 # ----------------------------
-world_candidates = collect_world_candidates()
-world_top3 = world_candidates[:3]
+world = collect_candidates(WORLD_FEEDS)[:3]
 
-world_lines = ["WORLD HEADLINES"]
-if not world_top3:
-    world_lines.append("(No qualifying world headlines in the last 24 hours.)")
+lines = ["WORLD HEADLINES"]
+if not world:
+    lines.append("(No qualifying world headlines in the last 24 hours.)")
 else:
-    for idx, it in enumerate(world_top3, start=1):
-        clean_url = clean_text_link(it["link"])
-        summary = medium_summary_from_rss(it["rss_summary"])
+    for idx, it in enumerate(world, start=1):
+        summary = two_sentence_summary(it["rss_summary"])
+        article_url = it["link"].strip()
+        clean_url = clean_text_link(article_url)
 
-        world_lines.append(f"{idx}) {it['title']}")
-        world_lines.append(f"   {summary}")
-        world_lines.append(f"   Read full article (clean text) → {clean_url}")
-        world_lines.append("")
+        # Format exactly as requested
+        lines.append(f"{idx}) {it['title']}")
+        lines.append(f"{summary}")
+        lines.append(f"Article Link: {article_url}")
+        lines.append(f"Clean Text Link: {clean_url}")
+        lines.append("")  # spacing between stories
 
-# Keep other sections as placeholders for now
-body_text = (
-    "\n".join(world_lines).strip()
-    + "\n\n\nUK POLITICS\n(Placeholder — next step)\n\n\n"
-    + "RUGBY UNION\n(Placeholder — next step)\n\n\n"
+# Placeholders for other sections (next steps)
+body = (
+    "\n".join(lines).strip()
+    + "\n\nUK POLITICS\n(Placeholder — next step)\n\n"
+    + "RUGBY UNION\n(Placeholder — next step)\n\n"
     + "PUNK ROCK\n(Placeholder — next step)\n"
 )
 
@@ -187,7 +203,7 @@ msg = EmailMessage()
 msg["Subject"] = subject
 msg["From"] = f"{EMAIL_FROM_NAME} <postmaster@{MAILGUN_DOMAIN}>"
 msg["To"] = EMAIL_TO
-msg.set_content(body_text)
+msg.set_content(body)
 
 with smtplib.SMTP("smtp.mailgun.org", 587) as server:
     server.starttls()
@@ -195,6 +211,5 @@ with smtplib.SMTP("smtp.mailgun.org", 587) as server:
     server.send_message(msg)
 
 print("Sent edition:", subject)
-print("World headlines included:", len(world_top3))
+print("World headlines included:", len(world))
 print("Window (UK):", window_start.isoformat(), "→", window_end.isoformat())
-
