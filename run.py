@@ -160,3 +160,32 @@ def build_html():
 html_body = build_html()
 
 # ----------------------------
+# Plain-text fallback
+# ----------------------------
+plain = ["WORLD HEADLINES\n"]
+for i, it in enumerate(world_items, start=1):
+    plain.append(f"{i}) {it['title']}")
+    plain.append(it["summary"])
+    plain.append(f"Article: {it['article_url']}")
+    plain.append(f"Clean: {it['clean_url']}\n")
+
+plain_body = "\n".join(plain)
+
+# ----------------------------
+# Send email (HTML first!)
+# ----------------------------
+msg = EmailMessage()
+msg["Subject"] = subject
+msg["From"] = f"{EMAIL_FROM_NAME} <postmaster@{MAILGUN_DOMAIN}>"
+msg["To"] = EMAIL_TO
+
+# HTML first → Spark shows HTML
+msg.set_content(html_body, subtype="html")
+msg.add_alternative(plain_body, subtype="plain")
+
+with smtplib.SMTP("smtp.mailgun.org", 587) as server:
+    server.starttls()
+    server.login(SMTP_USER, SMTP_PASS)
+    server.send_message(msg)
+
+print("Edition sent:", subject)
