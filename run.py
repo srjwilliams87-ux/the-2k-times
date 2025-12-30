@@ -9,7 +9,7 @@ EMAIL_TO = os.environ.get("EMAIL_TO")
 EMAIL_FROM_NAME = os.environ.get("EMAIL_FROM_NAME")
 
 response = requests.post(
-    f"https://api.eu.mailgun.net/v3/{MAILGUN_DOMAIN}/messages",
+    f"https://api.mailgun.net/v3/{MAILGUN_DOMAIN}/messages",
     auth=("api", MAILGUN_API_KEY),
     data={
         "from": f"{EMAIL_FROM_NAME} <postmaster@{MAILGUN_DOMAIN}>",
