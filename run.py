@@ -8,7 +8,7 @@ from zoneinfo import ZoneInfo
 import feedparser
 
 # ----------------------------
-# Settings (Render env vars)
+# Environment variables (Render)
 # ----------------------------
 MAILGUN_DOMAIN = os.environ.get("MAILGUN_DOMAIN")
 EMAIL_TO = os.environ.get("EMAIL_TO")
@@ -17,17 +17,15 @@ SMTP_USER = os.environ.get("MAILGUN_SMTP_USER")
 SMTP_PASS = os.environ.get("MAILGUN_SMTP_PASS")
 
 if not all([MAILGUN_DOMAIN, EMAIL_TO, SMTP_USER, SMTP_PASS]):
-    raise SystemExit("Missing one or more required environment variables in Render")
+    raise SystemExit("Missing required environment variables")
 
 TZ = ZoneInfo("Europe/London")
 
 # ----------------------------
-# Time window: previous 24 hours (UK time)
+# Time window: last 24 hours
 # ----------------------------
 now_uk = datetime.now(TZ)
-window_end = now_uk
 window_start = now_uk - timedelta(hours=24)
-
 subject = f"The 2k Times, {now_uk.strftime('%d.%m.%Y')}"
 
 WORLD_FEEDS = [
@@ -39,248 +37,126 @@ WORLD_FEEDS = [
 # Helpers
 # ----------------------------
 def clean_text_link(url: str) -> str:
-    url = (url or "").strip()
-    if url.startswith("http://"):
-        return "https://r.jina.ai/http://" + url[len("http://") :]
-    if url.startswith("https://"):
-        return "https://r.jina.ai/https://" + url[len("https://") :]
-    return "https://r.jina.ai/https://" + url
+    return "https://r.jina.ai/" + url
 
-def strip_html(s: str) -> str:
-    if not s:
-        return ""
-    s = re.sub(r"<[^>]+>", " ", s)
-    s = s.replace("&amp;", "&").replace("&quot;", '"').replace("&#39;", "'")
-    s = re.sub(r"\s+", " ", s).strip()
-    return s
+def strip_html(text: str) -> str:
+    text = re.sub(r"<[^>]+>", " ", text or "")
+    text = re.sub(r"\s+", " ", text)
+    return text.strip()
 
-def remove_rss_noise(s: str) -> str:
-    s = strip_html(s)
+def two_sentence_summary(text: str) -> str:
+    text = strip_html(text)
+    sentences = re.split(r"(?<=[.!?])\s+", text)
+    sentences = [s for s in sentences if len(s) > 20]
+    return " ".join(sentences[:2]) if sentences else "Summary unavailable."
 
-    noise_patterns = [
-        r"\bTitle:\s*.*?(?=URL\s*Source:|Published\s*Time:|Markdown\s*Content:|$)",
-        r"\bURL\s*Source:\s*https?://\S+",
-        r"\bPublished\s*Time:\s*\S+",
-        r"\bMarkdown\s*Content:\s*",
-        r"\[Skip to content\]",
-    ]
-    for pat in noise_patterns:
-        s = re.sub(pat, " ", s, flags=re.IGNORECASE)
-
-    s = re.sub(r"!\[.*?\]\(.*?\)", " ", s)
-    s = re.sub(r"\[Image\s*\d+.*?\]", " ", s, flags=re.IGNORECASE)
-    s = re.sub(r"https?://\S+", " ", s)
-    s = re.sub(r"\s+", " ", s).strip()
-    return s
-
-def two_sentence_summary(rss_summary: str) -> str:
-    s = remove_rss_noise(rss_summary)
-    if not s:
-        return "Summary unavailable."
-
-    sentences = re.split(r"(?<=[.!?])\s+", s)
-    sentences = [x.strip() for x in sentences if len(x.strip()) > 20]
-
-    if len(sentences) >= 2:
-        return f"{sentences[0]} {sentences[1]}"
-    if len(sentences) == 1:
-        return sentences[0]
-    return (s[:220].rstrip() + "…") if len(s) > 220 else s
-
-def parse_entry_time(entry):
+def parse_time(entry):
     if hasattr(entry, "published_parsed") and entry.published_parsed:
-        return datetime(*entry.published_parsed[:6]).replace(tzinfo=ZoneInfo("UTC")).astimezone(TZ)
-    if hasattr(entry, "updated_parsed") and entry.updated_parsed:
-        return datetime(*entry.updated_parsed[:6]).replace(tzinfo=ZoneInfo("UTC")).astimezone(TZ)
+        return datetime(*entry.published_parsed[:6], tzinfo=ZoneInfo("UTC")).astimezone(TZ)
     return None
 
-def looks_like_low_value(title: str) -> bool:
-    t = (title or "").lower()
-    return any(w in t for w in ["live", "minute-by-minute", "as it happened"])
-
-def collect_candidates(feed_urls):
-    items = []
-    for feed_url in feed_urls:
+# ----------------------------
+# Collect articles
+# ----------------------------
+def collect_articles():
+    articles = []
+    for feed_url in WORLD_FEEDS:
         feed = feedparser.parse(feed_url)
         for e in feed.entries:
-            title = getattr(e, "title", "").strip()
-            link = getattr(e, "link", "").strip()
-            if not title or not link:
-                continue
-            if looks_like_low_value(title):
+            published = parse_time(e)
+            if not published or not (window_start <= published <= now_uk):
                 continue
 
-            published_dt = parse_entry_time(e)
-            if not published_dt:
-                continue
-            if not (window_start <= published_dt <= window_end):
-                continue
+            articles.append({
+                "title": e.title,
+                "summary": two_sentence_summary(getattr(e, "summary", "")),
+                "article_url": e.link,
+                "clean_url": clean_text_link(e.link),
+                "published": published,
+            })
 
-            rss_summary = ""
-            if hasattr(e, "summary") and e.summary:
-                rss_summary = e.summary
-            elif hasattr(e, "description") and e.description:
-                rss_summary = e.description
-
-            items.append(
-                {
-                    "title": title,
-                    "link": link,
-                    "published": published_dt,
-                    "rss_summary": rss_summary,
-                }
-            )
-
-    items.sort(key=lambda x: x["published"], reverse=True)
+    articles.sort(key=lambda x: x["published"], reverse=True)
 
     seen = set()
-    out = []
-    for it in items:
-        key = it["title"].lower()
-        if key in seen:
-            continue
-        seen.add(key)
-        out.append(it)
-    return out
+    unique = []
+    for a in articles:
+        if a["title"] not in seen:
+            seen.add(a["title"])
+            unique.append(a)
+
+    return unique[:3]
+
+world_items = collect_articles()
 
 # ----------------------------
-# HTML builder (Spark-friendly: HTML as primary part)
+# HTML Newspaper Layout
 # ----------------------------
-def esc(s: str) -> str:
-    return (
-        (s or "")
-        .replace("&", "&amp;")
-        .replace("<", "&lt;")
-        .replace(">", "&gt;")
-        .replace('"', "&quot;")
-        .replace("'", "&#39;")
-    )
-
-def build_html_newspaper(subject_line: str, world_items: list) -> str:
-    date_str = subject_line.replace("The 2k Times, ", "")
+def build_html():
     rows = []
 
     rows.append(f"""
-      <tr><td style="padding:18px 18px 10px 18px;border-bottom:2px solid #111;">
-        <div style="font-size:30px;font-weight:800;margin:0;">The 2k Times</div>
-        <div style="font-size:13px;color:#555;margin-top:6px;">{esc(date_str)} • Daily Edition</div>
-      </td></tr>
+    <tr>
+      <td style="padding:20px;border-bottom:2px solid #111;">
+        <div style="font-size:32px;font-weight:800;">The 2k Times</div>
+        <div style="font-size:13px;color:#aaa;margin-top:6px;">
+          {now_uk.strftime('%d.%m.%Y')} · Daily Edition
+        </div>
+      </td>
+    </tr>
     """)
-
-    rows.append(f"""
-      <tr><td style="padding:16px 18px 10px 18px;">
-        <div style="font-size:14px;font-weight:800;letter-spacing:1px;margin:0 0 12px 0;">WORLD HEADLINES</div>
-      </td></tr>
-    """)
-
-    if not world_items:
-        rows.append(f"""
-          <tr><td style="padding:0 18px 16px 18px;color:#444;">
-            No qualifying world headlines in the last 24 hours.
-          </td></tr>
-        """)
-    else:
-        for i, it in enumerate(world_items, start=1):
-            rows.append(f"""
-              <tr><td style="padding:0 18px 16px 18px;border-top:1px solid #e6e6e6;">
-                <div style="padding-top:12px;font-size:16px;font-weight:700;line-height:1.35;">{i}) {esc(it['title'])}</div>
-                <div style="margin-top:6px;font-size:14px;line-height:1.55;color:#222;">{esc(it['summary'])}</div>
-                <div style="margin-top:10px;font-size:13px;line-height:1.6;">
-                  <b>Article Link:</b> <a href="{esc(it['article_url'])}" style="color:#0b57d0;text-decoration:underline;">{esc(it['article_url'])}</a>
-                </div>
-                <div style="margin-top:4px;font-size:13px;line-height:1.6;">
-                  <b>Clean Text Link:</b> <a href="{esc(it['clean_url'])}" style="color:#0b57d0;text-decoration:underline;">{esc(it['clean_url'])}</a>
-                </div>
-              </td></tr>
-            """)
-
-    for section in ["UK POLITICS", "RUGBY UNION", "PUNK ROCK"]:
-        rows.append(f"""
-          <tr><td style="padding:16px 18px;border-top:1px solid #eee;">
-            <div style="font-size:14px;font-weight:800;letter-spacing:1px;margin:0 0 10px 0;">{section}</div>
-            <div style="color:#444;">(Placeholder — next step)</div>
-          </td></tr>
-        """)
 
     rows.append("""
-      <tr><td style="padding:12px 18px;border-top:1px solid #eee;color:#777;font-size:12px;">
-        You’re receiving this because you subscribed to The 2k Times.
-      </td></tr>
+    <tr>
+      <td style="padding:16px;border-bottom:1px solid #333;">
+        <div style="font-size:14px;font-weight:800;letter-spacing:1px;">
+          WORLD HEADLINES
+        </div>
+      </td>
+    </tr>
     """)
 
-    return f"""\
-<html>
-  <head><meta charset="utf-8"></head>
-  <body style="margin:0;padding:0;background:#f7f7f7;">
-    <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background:#f7f7f7;padding:18px 0;">
-      <tr>
-        <td align="center">
-          <table role="presentation" width="720" cellspacing="0" cellpadding="0" style="background:#ffffff;border:1px solid #e6e6e6;border-radius:14px;overflow:hidden;">
-            {''.join(rows)}
-          </table>
-        </td>
-      </tr>
-    </table>
-  </body>
-</html>
-"""
+    for i, it in enumerate(world_items, start=1):
+        rows.append(f"""
+        <tr>
+          <td style="padding:18px;border-bottom:1px solid #333;">
+            <div style="font-size:18px;font-weight:700;line-height:1.4;">
+              {i}) {it['title']}
+            </div>
+
+            <div style="margin-top:8px;font-size:14px;line-height:1.6;color:#ddd;">
+              {it['summary']}
+            </div>
+
+            <div style="margin-top:12px;font-size:13px;">
+              <a href="{it['article_url']}" style="color:#6ea8ff;text-decoration:none;">
+                📰 Article Link
+              </a>
+              &nbsp;|&nbsp;
+              <a href="{it['clean_url']}" style="color:#6ea8ff;text-decoration:none;">
+                📄 Clean Text Link
+              </a>
+            </div>
+          </td>
+        </tr>
+        """)
+
+    return f"""
+    <html>
+    <body style="margin:0;background:#111;color:#fff;font-family:Georgia,serif;">
+      <table width="100%" cellpadding="0" cellspacing="0">
+        <tr>
+          <td align="center">
+            <table width="720" cellpadding="0" cellspacing="0"
+              style="background:#1b1b1b;border-radius:16px;overflow:hidden;">
+              {''.join(rows)}
+            </table>
+          </td>
+        </tr>
+      </table>
+    </body>
+    </html>
+    """
+
+html_body = build_html()
 
 # ----------------------------
-# Build World Headlines (top 3)
-# ----------------------------
-world_raw = collect_candidates(WORLD_FEEDS)[:3]
-world_items = []
-for it in world_raw:
-    article_url = it["link"].strip()
-    world_items.append(
-        {
-            "title": it["title"],
-            "summary": two_sentence_summary(it["rss_summary"]),
-            "article_url": article_url,
-            "clean_url": clean_text_link(article_url),
-        }
-    )
-
-# Plain-text fallback
-plain_lines = ["WORLD HEADLINES"]
-if not world_items:
-    plain_lines.append("(No qualifying world headlines in the last 24 hours.)")
-else:
-    for idx, it in enumerate(world_items, start=1):
-        plain_lines.append(f"{idx}) {it['title']}")
-        plain_lines.append(it["summary"])
-        plain_lines.append(f"Article Link: {it['article_url']}")
-        plain_lines.append(f"Clean Text Link: {it['clean_url']}")
-        plain_lines.append("")
-
-plain_body = (
-    "\n".join(plain_lines).strip()
-    + "\n\nUK POLITICS\n(Placeholder — next step)\n\n"
-    + "RUGBY UNION\n(Placeholder — next step)\n\n"
-    + "PUNK ROCK\n(Placeholder — next step)\n"
-)
-
-html_body = build_html_newspaper(subject, world_items)
-
-# ----------------------------
-# Send email via Mailgun SMTP
-# ----------------------------
-msg = EmailMessage()
-msg["Subject"] = subject
-msg["From"] = f"{EMAIL_FROM_NAME} <postmaster@{MAILGUN_DOMAIN}>"
-msg["To"] = EMAIL_TO
-
-# IMPORTANT: HTML first so Spark renders it
-msg.set_content(html_body, subtype="html")
-
-# Plain text as fallback
-msg.add_alternative(plain_body, subtype="plain")
-
-with smtplib.SMTP("smtp.mailgun.org", 587) as server:
-    server.starttls()
-    server.login(SMTP_USER, SMTP_PASS)
-    server.send_message(msg)
-
-print("Sent edition:", subject)
-print("World headlines included:", len(world_items))
-print("Window (UK):", window_start.isoformat(), "→", window_end.isoformat())
