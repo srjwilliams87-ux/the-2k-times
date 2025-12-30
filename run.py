@@ -8,9 +8,17 @@ MAILGUN_DOMAIN = os.environ.get("MAILGUN_DOMAIN")
 EMAIL_TO = os.environ.get("EMAIL_TO")
 EMAIL_FROM_NAME = os.environ.get("EMAIL_FROM_NAME")
 
-headers = {
-    "Authorization": f"Bearer {MAILGUN_API_KEY}"
-}
+# Simple sanity checks (helps debugging)
+if not MAILGUN_API_KEY:
+    raise SystemExit("Missing MAILGUN_API_KEY in Render environment variables")
+if not MAILGUN_DOMAIN:
+    raise SystemExit("Missing MAILGUN_DOMAIN in Render environment variables")
+if not EMAIL_TO:
+    raise SystemExit("Missing EMAIL_TO in Render environment variables")
+if not EMAIL_FROM_NAME:
+    EMAIL_FROM_NAME = "The 2k Times"
+
+headers = {"Authorization": f"Bearer {MAILGUN_API_KEY}"}
 
 response = requests.post(
     f"https://api.mailgun.net/v3/{MAILGUN_DOMAIN}/messages",
@@ -25,3 +33,4 @@ response = requests.post(
 
 print("Mailgun response:", response.status_code)
 print(response.text)
+
