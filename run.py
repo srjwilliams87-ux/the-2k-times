@@ -1,5 +1,24 @@
-print("The 2k Times — daily run starting")
+import os
+import requests
 
-# This file is intentionally simple.
-# It exists so Render can run something on schedule.
-# The real logic will be added next step.
+print("The 2k Times — sending test email")
+
+MAILGUN_API_KEY = os.environ.get("MAILGUN_API_KEY")
+MAILGUN_DOMAIN = os.environ.get("MAILGUN_DOMAIN")
+EMAIL_TO = os.environ.get("EMAIL_TO")
+EMAIL_FROM_NAME = os.environ.get("EMAIL_FROM_NAME")
+
+response = requests.post(
+    f"https://api.eu.mailgun.net/v3/{MAILGUN_DOMAIN}/messages",
+    auth=("api", MAILGUN_API_KEY),
+    data={
+        "from": f"{EMAIL_FROM_NAME} <postmaster@{MAILGUN_DOMAIN}>",
+        "to": [EMAIL_TO],
+        "subject": "The 2k Times — Test Email",
+        "text": "If you’re reading this, the daily newspaper robot works."
+    }
+)
+
+print("Mailgun response:", response.status_code)
+print(response.text)
+
