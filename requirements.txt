@@ -2,3 +2,6 @@ flask
 requests
 feedparser
 gunicorn
+readability-lxml
+lxml
+beautifulsoup4
