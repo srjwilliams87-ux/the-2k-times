@@ -67,9 +67,9 @@ def remove_rss_noise(s: str) -> str:
     for pat in noise_patterns:
         s = re.sub(pat, " ", s, flags=re.IGNORECASE)
 
-    s = re.sub(r"!\[.*?\]\(.*?\)", " ", s)                      # image markdown
+    s = re.sub(r"!\[.*?\]\(.*?\)", " ", s)
     s = re.sub(r"\[Image\s*\d+.*?\]", " ", s, flags=re.IGNORECASE)
-    s = re.sub(r"https?://\S+", " ", s)                          # embedded URLs
+    s = re.sub(r"https?://\S+", " ", s)
     s = re.sub(r"\s+", " ", s).strip()
     return s
 
@@ -77,8 +77,10 @@ def two_sentence_summary(rss_summary: str) -> str:
     s = remove_rss_noise(rss_summary)
     if not s:
         return "Summary unavailable."
+
     sentences = re.split(r"(?<=[.!?])\s+", s)
     sentences = [x.strip() for x in sentences if len(x.strip()) > 20]
+
     if len(sentences) >= 2:
         return f"{sentences[0]} {sentences[1]}"
     if len(sentences) == 1:
@@ -120,12 +122,14 @@ def collect_candidates(feed_urls):
             elif hasattr(e, "description") and e.description:
                 rss_summary = e.description
 
-            items.append({
-                "title": title,
-                "link": link,
-                "published": published_dt,
-                "rss_summary": rss_summary,
-            })
+            items.append(
+                {
+                    "title": title,
+                    "link": link,
+                    "published": published_dt,
+                    "rss_summary": rss_summary,
+                }
+            )
 
     items.sort(key=lambda x: x["published"], reverse=True)
 
@@ -140,7 +144,7 @@ def collect_candidates(feed_urls):
     return out
 
 # ----------------------------
-# HTML builder (Gmail-friendly)
+# HTML builder (Spark-friendly: HTML as primary part)
 # ----------------------------
 def esc(s: str) -> str:
     return (
@@ -190,7 +194,6 @@ def build_html_newspaper(subject_line: str, world_items: list) -> str:
               </td></tr>
             """)
 
-    # Placeholder sections
     for section in ["UK POLITICS", "RUGBY UNION", "PUNK ROCK"]:
         rows.append(f"""
           <tr><td style="padding:16px 18px;border-top:1px solid #eee;">
@@ -229,14 +232,16 @@ world_raw = collect_candidates(WORLD_FEEDS)[:3]
 world_items = []
 for it in world_raw:
     article_url = it["link"].strip()
-    world_items.append({
-        "title": it["title"],
-        "summary": two_sentence_summary(it["rss_summary"]),
-        "article_url": article_url,
-        "clean_url": clean_text_link(article_url),
-    })
+    world_items.append(
+        {
+            "title": it["title"],
+            "summary": two_sentence_summary(it["rss_summary"]),
+            "article_url": article_url,
+            "clean_url": clean_text_link(article_url),
+        }
+    )
 
-# Plain-text version (fallback)
+# Plain-text fallback
 plain_lines = ["WORLD HEADLINES"]
 if not world_items:
     plain_lines.append("(No qualifying world headlines in the last 24 hours.)")
@@ -265,8 +270,11 @@ msg["Subject"] = subject
 msg["From"] = f"{EMAIL_FROM_NAME} <postmaster@{MAILGUN_DOMAIN}>"
 msg["To"] = EMAIL_TO
 
-msg.set_content(plain_body)
-msg.add_alternative(html_body, subtype="html")
+# IMPORTANT: HTML first so Spark renders it
+msg.set_content(html_body, subtype="html")
+
+# Plain text as fallback
+msg.add_alternative(plain_body, subtype="plain")
 
 with smtplib.SMTP("smtp.mailgun.org", 587) as server:
     server.starttls()
