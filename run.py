@@ -8,6 +8,12 @@ from zoneinfo import ZoneInfo
 import feedparser
 
 # ----------------------------
+# STEP: FORCE A UNIQUE SUBJECT + VISIBLE TEMPLATE VERSION STAMP
+# ----------------------------
+TEMPLATE_VERSION = "v-newspaper-07"
+DEBUG_SUBJECT = True  # set to False once you’ve confirmed formatting updates are showing
+
+# ----------------------------
 # CONFIG / ENV
 # ----------------------------
 MAILGUN_DOMAIN = os.environ.get("MAILGUN_DOMAIN")
@@ -30,8 +36,13 @@ TZ = ZoneInfo("Europe/London")
 now_uk = datetime.now(TZ)
 window_start = now_uk - timedelta(hours=24)
 
-# Subject (locked format)
-subject = f"The 2k Times, {now_uk.strftime('%d.%m.%Y')}"
+# Subject (locked format normally; DEBUG adds time + template version to force a new thread)
+base_subject = f"The 2k Times, {now_uk.strftime('%d.%m.%Y')}"
+subject = (
+    base_subject
+    if not DEBUG_SUBJECT
+    else f"{base_subject} · {now_uk.strftime('%H:%M:%S')} · {TEMPLATE_VERSION}"
+)
 
 # ----------------------------
 # SOURCES (World Headlines)
@@ -162,7 +173,7 @@ def build_html():
     """
 
     def story_row(i, it, lead=False):
-        # Exaggerated hierarchy that survives email-client flattening
+        # Exaggerated hierarchy to survive email-client flattening
         headline_size = "30px" if lead else "16px"
         headline_weight = "900" if lead else "700"
         summary_size = "15px" if lead else "13.5px"
@@ -245,7 +256,7 @@ def build_html():
                   </div>
                   <div style="margin-top:10px;font-family:{font};font-size:12px;letter-spacing:2px;
                               text-transform:uppercase;color:{muted};">
-                    {date_line} · Daily Edition
+                    {date_line} · Daily Edition · {TEMPLATE_VERSION}
                   </div>
                 </td>
               </tr>
@@ -334,6 +345,8 @@ def build_html():
 plain_lines = [
     f"THE 2K TIMES — {now_uk.strftime('%d.%m.%Y')}",
     "",
+    f"(Plain-text fallback) {TEMPLATE_VERSION}",
+    "",
     "WORLD HEADLINES",
     "",
 ]
@@ -363,6 +376,7 @@ msg.set_content(plain_body)
 msg.add_alternative(html_body, subtype="html")
 
 print("Sending:", subject)
+print("TEMPLATE_VERSION:", TEMPLATE_VERSION)
 print("Window (UK):", window_start.isoformat(), "→", now_uk.isoformat())
 print("World headlines:", len(world_items))
 print("SMTP:", SMTP_HOST, SMTP_PORT)
@@ -374,3 +388,4 @@ with smtplib.SMTP(SMTP_HOST, SMTP_PORT) as server:
     server.send_message(msg)
 
 print("Edition sent.")
+
