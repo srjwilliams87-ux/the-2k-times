@@ -140,9 +140,9 @@ def build_html():
     date_line = now_uk.strftime("%d.%m.%Y")
 
     def story_row(i, it, lead=False):
-        headline_size = "22px" if lead else "18px"
-        headline_weight = "800" if lead else "700"
-        summary_size = "15px" if lead else "14px"
+     headline_size = "26px" if lead else "18px"
+headline_weight = "900" if lead else "700"
+summary_size = "14px" if lead else "13.5px"
 
         return f"""
         <tr>
@@ -158,15 +158,17 @@ def build_html():
             </div>
 
             <div style="
-              margin-top:8px;
-              font-family:{font};
-              font-size:{summary_size};
-              font-weight:400;
-              line-height:1.7;
-              color:{muted};
-            ">
-              {esc(it['summary'])}
-            </div>
+  margin-top:10px;
+  font-family:{font_stack};
+  font-size:12px;
+  font-weight:700;
+  letter-spacing:1px;
+  text-transform:uppercase;
+">
+  <a href="..." style="color:{link};text-decoration:none;">
+    Read in Reader →
+  </a>
+</div>
 
             <div style="
               margin-top:10px;
