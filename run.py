@@ -10,7 +10,7 @@ import feedparser
 # ----------------------------
 # DEBUG / VERSION
 # ----------------------------
-TEMPLATE_VERSION = "v-newspaper-09"
+TEMPLATE_VERSION = "v-newspaper-10"
 DEBUG_SUBJECT = True  # set False when you're happy
 
 # ----------------------------
@@ -148,12 +148,13 @@ world_items = collect_articles(WORLD_FEEDS, limit=3)
 # ----------------------------
 def build_html():
     outer_bg = "#111111"
-    paper = "#f7f5ef"
-    ink = "#111111"
-    muted = "#4a4a4a"
-    rule = "#c9c4b8"
-    rule_light = "#ddd8cc"
-    link = "#0b57d0"
+    paper = "#2b2a26"     # dark “paper”
+    ink = "#f2f2f2"
+    muted = "#c8c8c8"
+    link = "#8ab4ff"
+
+    # ✅ all dividers use the SAME thinnest weight
+    rule = "#4a4a4a"
 
     font = '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif'
     date_line = now_uk.strftime("%d.%m.%Y")
@@ -173,41 +174,58 @@ def build_html():
     </style>
     """
 
-    def story_block(i, it, lead=False):
-        # NOTE: styles go on TD/SPAN (more reliable than DIV)
-        headline_size = "34px" if lead else "18px"
-        headline_weight = "900" if lead else "700"
-        summary_size = "15px" if lead else "13.5px"
-        summary_weight = "500" if lead else "400"
-        pad_top = "22px" if lead else "16px"
+    def thin_rule(pad_top="0", pad_bottom="0"):
+        return f"""
+        <tr>
+          <td style="padding:{pad_top} 0 {pad_bottom} 0;{size_fix_inline}">
+            <div style="height:1px;background:{rule};font-size:0;line-height:0;">&nbsp;</div>
+          </td>
+        </tr>
+        """
 
+    def story_block(i, it, lead=False):
+        # ✅ Top Story headline same size as others
+        headline_size = "18px"
+        headline_weight = "800"
+        summary_size = "13.5px"
+        summary_weight = "400"
+        pad_top = "18px" if i == 1 else "16px"
+
+        # keep the left bar for the top story if you like (it looks good),
+        # but it no longer changes headline size
         left_bar = "border-left:4px solid %s;padding-left:12px;" % ink if lead else ""
 
         kicker_row = ""
         if lead:
             kicker_row = f"""
             <tr>
-              <td style="font-family:{font};font-size:11px;font-weight:900;letter-spacing:2px;
-                         text-transform:uppercase;color:{muted};padding:0 0 8px 0;{size_fix_inline}">
+              <td style="font-family:{font};
+                         font-size:11px !important;
+                         font-weight:900 !important;
+                         letter-spacing:2px;
+                         text-transform:uppercase;
+                         color:{muted};
+                         padding:0 0 8px 0;
+                         {size_fix_inline}">
                 TOP STORY
               </td>
             </tr>
             """
 
         return f"""
-        <table width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;">
+        <table width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;{size_fix_inline}">
           <tr><td style="height:{pad_top};font-size:0;line-height:0;">&nbsp;</td></tr>
 
           <tr>
             <td style="{left_bar}{size_fix_inline}">
-              <table width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;">
+              <table width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;{size_fix_inline}">
                 {kicker_row}
 
                 <tr>
                   <td style="font-family:{font};
                              font-size:{headline_size} !important;
                              font-weight:{headline_weight} !important;
-                             line-height:1.15;
+                             line-height:1.25;
                              color:{ink};
                              padding:0;
                              {size_fix_inline}">
@@ -254,22 +272,24 @@ def build_html():
           </tr>
 
           <tr><td style="height:16px;font-size:0;line-height:0;">&nbsp;</td></tr>
-          <tr><td style="height:1px;background:{rule_light};font-size:0;line-height:0;">&nbsp;</td></tr>
+          {thin_rule()}
         </table>
         """
 
-    world_html = ""
+    # Build world column
     if world_items:
+        world_html = ""
         for i, it in enumerate(world_items, start=1):
             world_html += story_block(i, it, lead=(i == 1))
     else:
         world_html = f"""
-        <table width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;">
+        <table width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;{size_fix_inline}">
           <tr>
             <td style="padding:18px 0;font-family:{font};color:{muted};font-size:14px;line-height:1.7;{size_fix_inline}">
               No qualifying world headlines in the last 24 hours.
             </td>
           </tr>
+          {thin_rule()}
         </table>
         """
 
@@ -286,12 +306,12 @@ def build_html():
         <tr>
           <td align="center" style="padding:18px;{size_fix_inline}">
             <table class="container" width="720" cellpadding="0" cellspacing="0"
-                   style="border-collapse:collapse;background:{paper};border-radius:14px;overflow:hidden;{size_fix_inline}">
+                   style="border-collapse:collapse;background:{paper};border-radius:18px;overflow:hidden;{size_fix_inline}">
 
               <!-- Masthead -->
               <tr>
-                <td align="center" style="padding:28px 20px 14px 20px;{size_fix_inline}">
-                  <table width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;">
+                <td align="center" style="padding:28px 20px 18px 20px;{size_fix_inline}">
+                  <table width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;{size_fix_inline}">
                     <tr>
                       <td align="center" style="font-family:{font};
                                                 font-size:46px !important;
@@ -322,38 +342,38 @@ def build_html():
                 </td>
               </tr>
 
-              <!-- Rules -->
+              <!-- ✅ Removed thick/black bar under masthead -->
               <tr>
                 <td style="padding:0 20px 12px 20px;">
-                  <div style="height:3px;background:{ink};"></div>
-                  <div style="height:1px;background:{rule};margin-top:7px;"></div>
+                  <div style="height:1px;background:{rule};font-size:0;line-height:0;">&nbsp;</div>
                 </td>
               </tr>
 
-              <!-- Section header -->
+              <!-- ✅ Section header (ALL CAPS, bold, larger) -->
               <tr>
                 <td style="padding:16px 20px 10px 20px;">
                   <span style="font-family:{font};
-                               font-size:12px !important;
+                               font-size:15px !important;
                                font-weight:900 !important;
-                               letter-spacing:2px;
+                               letter-spacing:2.2px;
                                text-transform:uppercase;
-                               color:{ink};">
-                    World Headlines
+                               color:{ink};
+                               {size_fix_inline}">
+                    WORLD HEADLINES
                   </span>
                 </td>
               </tr>
 
               <tr>
                 <td style="padding:0 20px;">
-                  <div style="height:2px;background:{rule};"></div>
+                  <div style="height:1px;background:{rule};font-size:0;line-height:0;">&nbsp;</div>
                 </td>
               </tr>
 
               <!-- Content columns -->
               <tr>
                 <td style="padding:12px 20px 22px 20px;">
-                  <table width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;">
+                  <table width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;{size_fix_inline}">
                     <tr>
 
                       <!-- Left column -->
@@ -361,30 +381,31 @@ def build_html():
                         {world_html}
                       </td>
 
-                      <!-- Divider -->
+                      <!-- Divider (same thin rule color) -->
                       <td class="divider" width="1" style="background:{rule};"></td>
 
                       <!-- Right column -->
                       <td class="stack colpadL" width="50%" valign="top" style="padding-left:12px;">
-                        <table width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;">
+                        <table width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;{size_fix_inline}">
                           <tr>
                             <td style="font-family:{font};
-                                       font-size:12px !important;
+                                       font-size:15px !important;
                                        font-weight:900 !important;
-                                       letter-spacing:2px;
+                                       letter-spacing:2.2px;
                                        text-transform:uppercase;
                                        color:{ink};
                                        {size_fix_inline}">
-                              Inside today
+                              INSIDE TODAY
                             </td>
                           </tr>
+
                           <tr><td style="height:10px;font-size:0;line-height:0;">&nbsp;</td></tr>
                           <tr><td style="height:1px;background:{rule};font-size:0;line-height:0;">&nbsp;</td></tr>
                           <tr><td style="height:12px;font-size:0;line-height:0;">&nbsp;</td></tr>
 
                           <tr>
                             <td style="font-family:{font};
-                                       font-size:15px !important;
+                                       font-size:14px !important;
                                        font-weight:600 !important;
                                        line-height:1.9;
                                        color:{muted};
