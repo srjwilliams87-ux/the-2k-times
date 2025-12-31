@@ -340,7 +340,6 @@ def build_html():
     """
     return html
 
-
 html_body = build_html()
 
 # ----------------------------
