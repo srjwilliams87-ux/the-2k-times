@@ -8,7 +8,7 @@ from zoneinfo import ZoneInfo
 import feedparser
 
 # ----------------------------
-# ENV
+# CONFIG / ENV
 # ----------------------------
 MAILGUN_DOMAIN = os.environ.get("MAILGUN_DOMAIN")
 EMAIL_TO = os.environ.get("EMAIL_TO")
@@ -17,25 +17,29 @@ SMTP_USER = os.environ.get("MAILGUN_SMTP_USER")
 SMTP_PASS = os.environ.get("MAILGUN_SMTP_PASS")
 
 READER_BASE_URL = (os.environ.get("READER_BASE_URL", "https://the-2k-times.onrender.com") or "").rstrip("/")
+DEBUG_EMAIL = os.environ.get("DEBUG_EMAIL", "0") == "1"
+
+# IMPORTANT: if your Mailgun domain/account is EU, this is usually correct:
+SMTP_HOST = os.environ.get("MAILGUN_SMTP_HOST", "smtp.mailgun.org")
+SMTP_PORT = int(os.environ.get("MAILGUN_SMTP_PORT", "587"))
 
 if not all([MAILGUN_DOMAIN, EMAIL_TO, SMTP_USER, SMTP_PASS]):
     raise SystemExit(
-        "Missing required environment variables (MAILGUN_DOMAIN, EMAIL_TO, MAILGUN_SMTP_USER, MAILGUN_SMTP_PASS)"
+        "Missing required env vars: MAILGUN_DOMAIN, EMAIL_TO, MAILGUN_SMTP_USER, MAILGUN_SMTP_PASS"
     )
 
 TZ = ZoneInfo("Europe/London")
-
-# ----------------------------
-# Time window: last 24 hours (UK time)
-# ----------------------------
 now_uk = datetime.now(TZ)
 window_start = now_uk - timedelta(hours=24)
 
-# Subject (locked format)
-subject = f"The 2k Times, {now_uk.strftime('%d.%m.%Y')}"
+HTML_VERSION = "2025-12-31.04"
+
+# Subject (locked format normally; DEBUG adds timestamp to force a new thread)
+base_subject = f"The 2k Times, {now_uk.strftime('%d.%m.%Y')}"
+subject = base_subject if not DEBUG_EMAIL else f"{base_subject} · DEBUG {now_uk.strftime('%H:%M:%S')} · v{HTML_VERSION}"
 
 # ----------------------------
-# Sources (World Headlines)
+# SOURCES (World Headlines)
 # ----------------------------
 WORLD_FEEDS = [
     "https://feeds.bbci.co.uk/news/world/rss.xml",
@@ -43,7 +47,7 @@ WORLD_FEEDS = [
 ]
 
 # ----------------------------
-# Helpers
+# HELPERS
 # ----------------------------
 def reader_link(url: str) -> str:
     url = (url or "").strip()
@@ -68,10 +72,13 @@ def two_sentence_summary(text: str) -> str:
 
 
 def parse_time(entry):
-    if hasattr(entry, "published_parsed") and entry.published_parsed:
-        return datetime(*entry.published_parsed[:6], tzinfo=ZoneInfo("UTC")).astimezone(TZ)
-    if hasattr(entry, "updated_parsed") and entry.updated_parsed:
-        return datetime(*entry.updated_parsed[:6], tzinfo=ZoneInfo("UTC")).astimezone(TZ)
+    # feedparser returns time tuples; assume UTC then convert to UK
+    if getattr(entry, "published_parsed", None):
+        dt = datetime(*entry.published_parsed[:6], tzinfo=ZoneInfo("UTC")).astimezone(TZ)
+        return dt
+    if getattr(entry, "updated_parsed", None):
+        dt = datetime(*entry.updated_parsed[:6], tzinfo=ZoneInfo("UTC")).astimezone(TZ)
+        return dt
     return None
 
 
@@ -137,7 +144,7 @@ def esc(s: str) -> str:
 world_items = collect_articles(WORLD_FEEDS, limit=3)
 
 # ----------------------------
-# Newspaper HTML (mobile stacked, sans-serif hierarchy)
+# HTML (newspaper, strong hierarchy, Gmail-friendly)
 # ----------------------------
 def build_html():
     outer_bg = "#111111"
@@ -152,34 +159,31 @@ def build_html():
     date_line = now_uk.strftime("%d.%m.%Y")
 
     def story_row(i, it, lead=False):
-        headline_size = "26px" if lead else "18px"
-        headline_weight = "900" if lead else "700"
-        summary_size = "15px" if lead else "13.5px"
+        # Make the difference VERY obvious
+        h_size = "30px" if lead else "18px"
+        h_weight = "900" if lead else "700"
+        s_size = "15px" if lead else "13.5px"
 
         return f"""
         <tr>
           <td style="padding:18px 0 16px 0;">
-            <div style="font-family:{font};font-size:{headline_size};font-weight:{headline_weight};
-                        line-height:1.25;color:{ink};">
+            <h2 style="margin:0;font-family:{font};font-size:{h_size};font-weight:{h_weight};
+                       line-height:1.15;color:{ink};">
               {i}. {esc(it['title'])}
-            </div>
+            </h2>
 
-            <div style="margin-top:8px;font-family:{font};font-size:{summary_size};font-weight:400;
-                        line-height:1.7;color:{muted};">
+            <p style="margin:10px 0 0 0;font-family:{font};font-size:{s_size};font-weight:400;
+                      line-height:1.7;color:{muted};">
               {esc(it['summary'])}
-            </div>
+            </p>
 
-            <div style="margin-top:12px;font-family:{font};font-size:12px;font-weight:800;
-                        letter-spacing:1px;text-transform:uppercase;">
-              <a href="{esc(it['reader'])}" style="color:{link};text-decoration:none;">
-                Read in Reader →
-              </a>
-            </div>
+            <p style="margin:12px 0 0 0;font-family:{font};font-size:12px;font-weight:800;
+                      letter-spacing:1px;text-transform:uppercase;">
+              <a href="{esc(it['reader'])}" style="color:{link};text-decoration:none;">Read in Reader →</a>
+            </p>
           </td>
         </tr>
-        <tr>
-          <td><div style="height:1px;background:{rule_light};"></div></td>
-        </tr>
+        <tr><td><div style="height:1px;background:{rule_light};"></div></td></tr>
         """
 
     if world_items:
@@ -205,25 +209,32 @@ def build_html():
     </style>
     """
 
-    html = f"""
+    return f"""
     <html>
     <head>
       <meta name="viewport" content="width=device-width, initial-scale=1">
       {style_block}
     </head>
     <body style="margin:0;background:{outer_bg};">
-      <table width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;">
+      <table width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;background:{outer_bg};">
         <tr>
           <td align="center" style="padding:18px;">
             <table class="container" width="720" cellpadding="0" cellspacing="0"
                    style="border-collapse:collapse;background:{paper};border-radius:14px;overflow:hidden;">
 
+              <!-- DEBUG BANNER (proves HTML + version) -->
+              <tr>
+                <td style="padding:10px 20px;background:#fff2cc;font-family:{font};font-size:12px;font-weight:800;color:#5a4a00;">
+                  HTML v{HTML_VERSION} · If you can see this banner, you are viewing the HTML version.
+                </td>
+              </tr>
+
               <!-- Masthead -->
               <tr>
                 <td style="padding:26px 20px 14px 20px;text-align:center;">
-                  <div style="font-family:{font};font-size:44px;font-weight:900;color:{ink};line-height:1.05;">
+                  <h1 style="margin:0;font-family:{font};font-size:46px;font-weight:900;color:{ink};line-height:1.05;">
                     The 2k Times
-                  </div>
+                  </h1>
                   <div style="margin-top:8px;font-family:{font};font-size:12px;letter-spacing:2px;
                               text-transform:uppercase;color:{muted};">
                     {date_line} · Daily Edition
@@ -238,7 +249,7 @@ def build_html():
                 </td>
               </tr>
 
-              <!-- Section header -->
+              <!-- Section -->
               <tr>
                 <td style="padding:16px 20px 10px 20px;">
                   <div style="font-family:{font};font-size:12px;font-weight:900;letter-spacing:2px;
@@ -259,17 +270,14 @@ def build_html():
                 <td style="padding:12px 20px 22px 20px;">
                   <table width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;">
                     <tr>
-                      <!-- Left -->
                       <td class="stack" width="50%" valign="top" style="padding-right:12px;">
                         <table width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;">
                           {world_html}
                         </table>
                       </td>
 
-                      <!-- Divider -->
                       <td class="divider" width="1" style="background:{rule};"></td>
 
-                      <!-- Right -->
                       <td class="stack" width="50%" valign="top" style="padding-left:12px;">
                         <div style="font-family:{font};font-size:12px;font-weight:900;letter-spacing:2px;
                                     text-transform:uppercase;color:{ink};">
@@ -297,7 +305,7 @@ def build_html():
               <!-- Footer -->
               <tr>
                 <td style="padding:16px;text-align:center;font-family:{font};font-size:11px;color:{muted};">
-                  © The 2k Times · Delivered daily at 05:30
+                  © The 2k Times · Delivered daily at 05:30 · v{HTML_VERSION}
                 </td>
               </tr>
 
@@ -308,16 +316,15 @@ def build_html():
     </body>
     </html>
     """
-    return html
 
-
-html_body = build_html()
 
 # ----------------------------
 # Plain text fallback
 # ----------------------------
 plain_lines = [
     f"THE 2K TIMES — {now_uk.strftime('%d.%m.%Y')}",
+    "",
+    f"(Plain-text fallback) Version {HTML_VERSION}",
     "",
     "WORLD HEADLINES",
     "",
@@ -335,24 +342,27 @@ else:
 plain_body = "\n".join(plain_lines).strip() + "\n"
 
 # ----------------------------
-# Send email (plain first, html alternative)
+# Send email (multipart/alternative)
 # ----------------------------
+html_body = build_html()
+
 msg = EmailMessage()
 msg["Subject"] = subject
 msg["From"] = f"{EMAIL_FROM_NAME} <postmaster@{MAILGUN_DOMAIN}>"
 msg["To"] = EMAIL_TO
 
-# Ensure multipart/alternative is constructed correctly
 msg.set_content(plain_body)
 msg.add_alternative(html_body, subtype="html")
 
-with smtplib.SMTP("smtp.mailgun.org", 587) as server:
+print("Sending:", subject)
+print("HTML_VERSION:", HTML_VERSION)
+print("Window (UK):", window_start.isoformat(), "→", now_uk.isoformat())
+print("World headlines:", len(world_items))
+print("SMTP:", SMTP_HOST, SMTP_PORT)
+
+with smtplib.SMTP(SMTP_HOST, SMTP_PORT) as server:
     server.starttls()
     server.login(SMTP_USER, SMTP_PASS)
     server.send_message(msg)
 
-print("Edition sent:", subject)
-print("World headlines included:", len(world_items))
-print("Window (UK):", window_start.isoformat(), "→", now_uk.isoformat())
-print("Reader base URL:", READER_BASE_URL)
-
+print("Edition sent.")
