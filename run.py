@@ -10,8 +10,8 @@ import feedparser
 # ----------------------------
 # DEBUG / VERSION
 # ----------------------------
-TEMPLATE_VERSION = "v-newspaper-08"
-DEBUG_SUBJECT = True  # set False once confirmed
+TEMPLATE_VERSION = "v-newspaper-09"
+DEBUG_SUBJECT = True  # set False when you're happy
 
 # ----------------------------
 # ENV
@@ -158,8 +158,7 @@ def build_html():
     font = '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif'
     date_line = now_uk.strftime("%d.%m.%Y")
 
-    # TEXT_SIZE_FIX: stop Spark/Gmail font boosting (especially on mobile / dark mode)
-    # Put it inline because some clients strip <style> blocks.
+    # Prevent client “font boosting”
     size_fix_inline = "-webkit-text-size-adjust:100%;text-size-adjust:100%;-ms-text-size-adjust:100%;"
 
     style_block = """
@@ -168,80 +167,110 @@ def build_html():
         .container{width:100%!important}
         .stack{display:block!important;width:100%!important}
         .divider{display:none!important}
-        .colpad{padding-left:0!important;padding-right:0!important}
+        .colpadL{padding-left:0!important}
+        .colpadR{padding-right:0!important}
       }
     </style>
     """
 
-    def story_row(i, it, lead=False):
-        # TEXT_SIZE_FIX: use !important to reduce “flattening”
-        headline_size = "40px" if lead else "18px"
+    def story_block(i, it, lead=False):
+        # NOTE: styles go on TD/SPAN (more reliable than DIV)
+        headline_size = "34px" if lead else "18px"
         headline_weight = "900" if lead else "700"
-        summary_size = "16px" if lead else "13.5px"
-        outer_pad = "26px 0 20px 0" if lead else "16px 0 14px 0"
+        summary_size = "15px" if lead else "13.5px"
+        summary_weight = "500" if lead else "400"
+        pad_top = "22px" if lead else "16px"
 
-        kicker = ""
+        left_bar = "border-left:4px solid %s;padding-left:12px;" % ink if lead else ""
+
+        kicker_row = ""
         if lead:
-            kicker = f"""
-            <div style="font-family:{font};font-size:11px !important;font-weight:900 !important;letter-spacing:2px;
-                        text-transform:uppercase;color:{muted};margin:0 0 8px 0;">
-              Top Story
-            </div>
+            kicker_row = f"""
+            <tr>
+              <td style="font-family:{font};font-size:11px;font-weight:900;letter-spacing:2px;
+                         text-transform:uppercase;color:{muted};padding:0 0 8px 0;{size_fix_inline}">
+                TOP STORY
+              </td>
+            </tr>
             """
 
-        left_wrap_open = f'<div style="border-left:4px solid {ink};padding-left:12px;">' if lead else "<div>"
-        left_wrap_close = "</div>"
-
         return f"""
-        <tr>
-          <td style="padding:{outer_pad};">
-            {left_wrap_open}
-              {kicker}
+        <table width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;">
+          <tr><td style="height:{pad_top};font-size:0;line-height:0;">&nbsp;</td></tr>
 
-              <div style="font-family:{font};
-                          font-size:{headline_size} !important;
-                          font-weight:{headline_weight} !important;
-                          line-height:1.15;
-                          color:{ink};">
-                {i}. {esc(it['title'])}
-              </div>
+          <tr>
+            <td style="{left_bar}{size_fix_inline}">
+              <table width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;">
+                {kicker_row}
 
-              <div style="margin-top:10px;
-                          font-family:{font};
-                          font-size:{summary_size} !important;
-                          font-weight:400;
-                          line-height:1.7;
-                          color:{muted};">
-                {esc(it['summary'])}
-              </div>
+                <tr>
+                  <td style="font-family:{font};
+                             font-size:{headline_size} !important;
+                             font-weight:{headline_weight} !important;
+                             line-height:1.15;
+                             color:{ink};
+                             padding:0;
+                             {size_fix_inline}">
+                    <span style="font-size:{headline_size} !important;font-weight:{headline_weight} !important;">
+                      {i}. {esc(it['title'])}
+                    </span>
+                  </td>
+                </tr>
 
-              <div style="margin-top:12px;
-                          font-family:{font};
-                          font-size:12px !important;
-                          font-weight:800 !important;
-                          letter-spacing:1px;
-                          text-transform:uppercase;">
-                <a href="{esc(it['reader'])}" style="color:{link};text-decoration:none;">
-                  Read in Reader →
-                </a>
-              </div>
-            {left_wrap_close}
-          </td>
-        </tr>
-        <tr><td><div style="height:1px;background:{rule_light};"></div></td></tr>
+                <tr><td style="height:10px;font-size:0;line-height:0;">&nbsp;</td></tr>
+
+                <tr>
+                  <td style="font-family:{font};
+                             font-size:{summary_size} !important;
+                             font-weight:{summary_weight} !important;
+                             line-height:1.7;
+                             color:{muted};
+                             padding:0;
+                             {size_fix_inline}">
+                    <span style="font-size:{summary_size} !important;font-weight:{summary_weight} !important;">
+                      {esc(it['summary'])}
+                    </span>
+                  </td>
+                </tr>
+
+                <tr><td style="height:12px;font-size:0;line-height:0;">&nbsp;</td></tr>
+
+                <tr>
+                  <td style="font-family:{font};
+                             font-size:12px !important;
+                             font-weight:900 !important;
+                             letter-spacing:1px;
+                             text-transform:uppercase;
+                             padding:0;
+                             {size_fix_inline}">
+                    <a href="{esc(it['reader'])}" style="color:{link};text-decoration:none;">
+                      Read in Reader →
+                    </a>
+                  </td>
+                </tr>
+
+              </table>
+            </td>
+          </tr>
+
+          <tr><td style="height:16px;font-size:0;line-height:0;">&nbsp;</td></tr>
+          <tr><td style="height:1px;background:{rule_light};font-size:0;line-height:0;">&nbsp;</td></tr>
+        </table>
         """
 
+    world_html = ""
     if world_items:
-        world_html = ""
         for i, it in enumerate(world_items, start=1):
-            world_html += story_row(i, it, lead=(i == 1))
+            world_html += story_block(i, it, lead=(i == 1))
     else:
         world_html = f"""
-        <tr>
-          <td style="padding:18px 0;font-family:{font};color:{muted};font-size:14px;line-height:1.7;">
-            No qualifying world headlines in the last 24 hours.
-          </td>
-        </tr>
+        <table width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;">
+          <tr>
+            <td style="padding:18px 0;font-family:{font};color:{muted};font-size:14px;line-height:1.7;{size_fix_inline}">
+              No qualifying world headlines in the last 24 hours.
+            </td>
+          </tr>
+        </table>
         """
 
     return f"""
@@ -261,26 +290,39 @@ def build_html():
 
               <!-- Masthead -->
               <tr>
-                <td style="padding:28px 20px 14px 20px;text-align:center;{size_fix_inline}">
-                  <div style="font-family:{font};
-                              font-size:56px !important;
-                              font-weight:900 !important;
-                              color:{ink};
-                              line-height:1.0;">
-                    The 2k Times
-                  </div>
-
-                  <div style="margin-top:10px;font-family:{font};
-                              font-size:12px !important;
-                              font-weight:700 !important;
-                              letter-spacing:2px;
-                              text-transform:uppercase;
-                              color:{muted};">
-                    {date_line} · Daily Edition · {TEMPLATE_VERSION}
-                  </div>
+                <td align="center" style="padding:28px 20px 14px 20px;{size_fix_inline}">
+                  <table width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;">
+                    <tr>
+                      <td align="center" style="font-family:{font};
+                                                font-size:46px !important;
+                                                font-weight:900 !important;
+                                                color:{ink};
+                                                line-height:1.05;
+                                                {size_fix_inline}">
+                        <span style="font-size:46px !important;font-weight:900 !important;">
+                          The 2k Times
+                        </span>
+                      </td>
+                    </tr>
+                    <tr><td style="height:10px;font-size:0;line-height:0;">&nbsp;</td></tr>
+                    <tr>
+                      <td align="center" style="font-family:{font};
+                                                font-size:12px !important;
+                                                font-weight:700 !important;
+                                                letter-spacing:2px;
+                                                text-transform:uppercase;
+                                                color:{muted};
+                                                {size_fix_inline}">
+                        <span style="font-size:12px !important;font-weight:700 !important;">
+                          {date_line} · Daily Edition · {TEMPLATE_VERSION}
+                        </span>
+                      </td>
+                    </tr>
+                  </table>
                 </td>
               </tr>
 
+              <!-- Rules -->
               <tr>
                 <td style="padding:0 20px 12px 20px;">
                   <div style="height:3px;background:{ink};"></div>
@@ -291,14 +333,14 @@ def build_html():
               <!-- Section header -->
               <tr>
                 <td style="padding:16px 20px 10px 20px;">
-                  <div style="font-family:{font};
-                              font-size:12px !important;
-                              font-weight:900 !important;
-                              letter-spacing:2px;
-                              text-transform:uppercase;
-                              color:{ink};">
+                  <span style="font-family:{font};
+                               font-size:12px !important;
+                               font-weight:900 !important;
+                               letter-spacing:2px;
+                               text-transform:uppercase;
+                               color:{ink};">
                     World Headlines
-                  </div>
+                  </span>
                 </td>
               </tr>
 
@@ -308,52 +350,67 @@ def build_html():
                 </td>
               </tr>
 
-              <!-- Content -->
+              <!-- Content columns -->
               <tr>
                 <td style="padding:12px 20px 22px 20px;">
                   <table width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;">
                     <tr>
-                      <!-- Left -->
-                      <td class="stack colpad" width="50%" valign="top" style="padding-right:12px;">
-                        <table width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;">
-                          {world_html}
-                        </table>
+
+                      <!-- Left column -->
+                      <td class="stack colpadR" width="50%" valign="top" style="padding-right:12px;">
+                        {world_html}
                       </td>
 
                       <!-- Divider -->
                       <td class="divider" width="1" style="background:{rule};"></td>
 
-                      <!-- Right -->
-                      <td class="stack colpad" width="50%" valign="top" style="padding-left:12px;">
-                        <div style="font-family:{font};
-                                    font-size:12px !important;
-                                    font-weight:900 !important;
-                                    letter-spacing:2px;
-                                    text-transform:uppercase;
-                                    color:{ink};">
-                          Inside today
-                        </div>
+                      <!-- Right column -->
+                      <td class="stack colpadL" width="50%" valign="top" style="padding-left:12px;">
+                        <table width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;">
+                          <tr>
+                            <td style="font-family:{font};
+                                       font-size:12px !important;
+                                       font-weight:900 !important;
+                                       letter-spacing:2px;
+                                       text-transform:uppercase;
+                                       color:{ink};
+                                       {size_fix_inline}">
+                              Inside today
+                            </td>
+                          </tr>
+                          <tr><td style="height:10px;font-size:0;line-height:0;">&nbsp;</td></tr>
+                          <tr><td style="height:1px;background:{rule};font-size:0;line-height:0;">&nbsp;</td></tr>
+                          <tr><td style="height:12px;font-size:0;line-height:0;">&nbsp;</td></tr>
 
-                        <div style="height:1px;background:{rule};margin:10px 0 12px 0;"></div>
+                          <tr>
+                            <td style="font-family:{font};
+                                       font-size:15px !important;
+                                       font-weight:600 !important;
+                                       line-height:1.9;
+                                       color:{muted};
+                                       {size_fix_inline}">
+                              • UK Politics (2 stories)<br/>
+                              • Rugby Union (top 5)<br/>
+                              • Punk Rock (UK gigs + releases)
+                            </td>
+                          </tr>
 
-                        <div style="font-family:{font};
-                                    font-size:15px !important;
-                                    font-weight:500;
-                                    line-height:1.9;
-                                    color:{muted};">
-                          • UK Politics (2 stories)<br/>
-                          • Rugby Union (top 5)<br/>
-                          • Punk Rock (UK gigs + releases)
-                        </div>
+                          <tr><td style="height:14px;font-size:0;line-height:0;">&nbsp;</td></tr>
 
-                        <div style="margin-top:14px;font-family:{font};
-                                    font-size:12px !important;
-                                    line-height:1.7;
-                                    color:{muted};">
-                          Curated from the last 24 hours.<br/>
-                          Reader links included.
-                        </div>
+                          <tr>
+                            <td style="font-family:{font};
+                                       font-size:12px !important;
+                                       font-weight:500;
+                                       line-height:1.7;
+                                       color:{muted};
+                                       {size_fix_inline}">
+                              Curated from the last 24 hours.<br/>
+                              Reader links included.
+                            </td>
+                          </tr>
+                        </table>
                       </td>
+
                     </tr>
                   </table>
                 </td>
@@ -362,7 +419,7 @@ def build_html():
               <!-- Footer -->
               <tr>
                 <td style="padding:16px;text-align:center;font-family:{font};
-                           font-size:11px !important;color:{muted};">
+                           font-size:11px !important;color:{muted};{size_fix_inline}">
                   © The 2k Times · Delivered daily at 05:30
                 </td>
               </tr>
