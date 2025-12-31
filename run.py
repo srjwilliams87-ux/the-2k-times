@@ -8,13 +8,13 @@ from zoneinfo import ZoneInfo
 import feedparser
 
 # ----------------------------
-# STEP: FORCE A UNIQUE SUBJECT + VISIBLE TEMPLATE VERSION STAMP
+# DEBUG / VERSION
 # ----------------------------
-TEMPLATE_VERSION = "v-newspaper-07"
-DEBUG_SUBJECT = True  # set to False once you’ve confirmed formatting updates are showing
+TEMPLATE_VERSION = "v-newspaper-08"
+DEBUG_SUBJECT = True  # set False once confirmed
 
 # ----------------------------
-# CONFIG / ENV
+# ENV
 # ----------------------------
 MAILGUN_DOMAIN = os.environ.get("MAILGUN_DOMAIN")
 EMAIL_TO = os.environ.get("EMAIL_TO")
@@ -36,7 +36,6 @@ TZ = ZoneInfo("Europe/London")
 now_uk = datetime.now(TZ)
 window_start = now_uk - timedelta(hours=24)
 
-# Subject (locked format normally; DEBUG adds time + template version to force a new thread)
 base_subject = f"The 2k Times, {now_uk.strftime('%d.%m.%Y')}"
 subject = (
     base_subject
@@ -117,10 +116,8 @@ def collect_articles(feed_urls, limit):
                 }
             )
 
-    # newest first
     articles.sort(key=lambda x: x["published"], reverse=True)
 
-    # de-dupe by title
     seen = set()
     unique = []
     for a in articles:
@@ -147,7 +144,7 @@ def esc(s: str) -> str:
 world_items = collect_articles(WORLD_FEEDS, limit=3)
 
 # ----------------------------
-# HTML (Newspaper: sans-serif, strong hierarchy, mobile stacked)
+# HTML (Newspaper)
 # ----------------------------
 def build_html():
     outer_bg = "#111111"
@@ -161,6 +158,10 @@ def build_html():
     font = '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif'
     date_line = now_uk.strftime("%d.%m.%Y")
 
+    # TEXT_SIZE_FIX: stop Spark/Gmail font boosting (especially on mobile / dark mode)
+    # Put it inline because some clients strip <style> blocks.
+    size_fix_inline = "-webkit-text-size-adjust:100%;text-size-adjust:100%;-ms-text-size-adjust:100%;"
+
     style_block = """
     <style>
       @media screen and (max-width:640px){
@@ -173,50 +174,58 @@ def build_html():
     """
 
     def story_row(i, it, lead=False):
-        # Exaggerated hierarchy to survive email-client flattening
-        headline_size = "30px" if lead else "16px"
+        # TEXT_SIZE_FIX: use !important to reduce “flattening”
+        headline_size = "40px" if lead else "18px"
         headline_weight = "900" if lead else "700"
-        summary_size = "15px" if lead else "13.5px"
+        summary_size = "16px" if lead else "13.5px"
         outer_pad = "26px 0 20px 0" if lead else "16px 0 14px 0"
 
         kicker = ""
-        left_rule = ""
-
         if lead:
             kicker = f"""
-            <div style="font-family:{font};font-size:11px;font-weight:900;letter-spacing:2px;
+            <div style="font-family:{font};font-size:11px !important;font-weight:900 !important;letter-spacing:2px;
                         text-transform:uppercase;color:{muted};margin:0 0 8px 0;">
               Top Story
             </div>
             """
-            left_rule = f"""
-            <div style="border-left:4px solid {ink};padding-left:12px;">
-            """
-        else:
-            left_rule = "<div>"
+
+        left_wrap_open = f'<div style="border-left:4px solid {ink};padding-left:12px;">' if lead else "<div>"
+        left_wrap_close = "</div>"
 
         return f"""
         <tr>
           <td style="padding:{outer_pad};">
-            {left_rule}
+            {left_wrap_open}
               {kicker}
-              <div style="font-family:{font};font-size:{headline_size};font-weight:{headline_weight};
-                          line-height:1.15;color:{ink};">
+
+              <div style="font-family:{font};
+                          font-size:{headline_size} !important;
+                          font-weight:{headline_weight} !important;
+                          line-height:1.15;
+                          color:{ink};">
                 {i}. {esc(it['title'])}
               </div>
 
-              <div style="margin-top:10px;font-family:{font};font-size:{summary_size};font-weight:400;
-                          line-height:1.7;color:{muted};">
+              <div style="margin-top:10px;
+                          font-family:{font};
+                          font-size:{summary_size} !important;
+                          font-weight:400;
+                          line-height:1.7;
+                          color:{muted};">
                 {esc(it['summary'])}
               </div>
 
-              <div style="margin-top:12px;font-family:{font};font-size:12px;font-weight:800;
-                          letter-spacing:1px;text-transform:uppercase;">
+              <div style="margin-top:12px;
+                          font-family:{font};
+                          font-size:12px !important;
+                          font-weight:800 !important;
+                          letter-spacing:1px;
+                          text-transform:uppercase;">
                 <a href="{esc(it['reader'])}" style="color:{link};text-decoration:none;">
                   Read in Reader →
                 </a>
               </div>
-            </div>
+            {left_wrap_close}
           </td>
         </tr>
         <tr><td><div style="height:1px;background:{rule_light};"></div></td></tr>
@@ -241,21 +250,32 @@ def build_html():
       <meta name="viewport" content="width=device-width, initial-scale=1">
       {style_block}
     </head>
-    <body style="margin:0;background:{outer_bg};">
-      <table width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;background:{outer_bg};">
+
+    <body style="margin:0;background:{outer_bg};{size_fix_inline}">
+      <table width="100%" cellpadding="0" cellspacing="0"
+             style="border-collapse:collapse;background:{outer_bg};{size_fix_inline}">
         <tr>
-          <td align="center" style="padding:18px;">
+          <td align="center" style="padding:18px;{size_fix_inline}">
             <table class="container" width="720" cellpadding="0" cellspacing="0"
-                   style="border-collapse:collapse;background:{paper};border-radius:14px;overflow:hidden;">
+                   style="border-collapse:collapse;background:{paper};border-radius:14px;overflow:hidden;{size_fix_inline}">
 
               <!-- Masthead -->
               <tr>
-                <td style="padding:28px 20px 14px 20px;text-align:center;">
-                  <div style="font-family:{font};font-size:46px;font-weight:900;color:{ink};line-height:1.0;">
+                <td style="padding:28px 20px 14px 20px;text-align:center;{size_fix_inline}">
+                  <div style="font-family:{font};
+                              font-size:56px !important;
+                              font-weight:900 !important;
+                              color:{ink};
+                              line-height:1.0;">
                     The 2k Times
                   </div>
-                  <div style="margin-top:10px;font-family:{font};font-size:12px;letter-spacing:2px;
-                              text-transform:uppercase;color:{muted};">
+
+                  <div style="margin-top:10px;font-family:{font};
+                              font-size:12px !important;
+                              font-weight:700 !important;
+                              letter-spacing:2px;
+                              text-transform:uppercase;
+                              color:{muted};">
                     {date_line} · Daily Edition · {TEMPLATE_VERSION}
                   </div>
                 </td>
@@ -271,8 +291,12 @@ def build_html():
               <!-- Section header -->
               <tr>
                 <td style="padding:16px 20px 10px 20px;">
-                  <div style="font-family:{font};font-size:12px;font-weight:900;letter-spacing:2px;
-                              text-transform:uppercase;color:{ink};">
+                  <div style="font-family:{font};
+                              font-size:12px !important;
+                              font-weight:900 !important;
+                              letter-spacing:2px;
+                              text-transform:uppercase;
+                              color:{ink};">
                     World Headlines
                   </div>
                 </td>
@@ -301,20 +325,31 @@ def build_html():
 
                       <!-- Right -->
                       <td class="stack colpad" width="50%" valign="top" style="padding-left:12px;">
-                        <div style="font-family:{font};font-size:12px;font-weight:900;letter-spacing:2px;
-                                    text-transform:uppercase;color:{ink};">
+                        <div style="font-family:{font};
+                                    font-size:12px !important;
+                                    font-weight:900 !important;
+                                    letter-spacing:2px;
+                                    text-transform:uppercase;
+                                    color:{ink};">
                           Inside today
                         </div>
 
                         <div style="height:1px;background:{rule};margin:10px 0 12px 0;"></div>
 
-                        <div style="font-family:{font};font-size:14px;line-height:1.9;color:{muted};">
+                        <div style="font-family:{font};
+                                    font-size:15px !important;
+                                    font-weight:500;
+                                    line-height:1.9;
+                                    color:{muted};">
                           • UK Politics (2 stories)<br/>
                           • Rugby Union (top 5)<br/>
                           • Punk Rock (UK gigs + releases)
                         </div>
 
-                        <div style="margin-top:14px;font-family:{font};font-size:12px;line-height:1.7;color:{muted};">
+                        <div style="margin-top:14px;font-family:{font};
+                                    font-size:12px !important;
+                                    line-height:1.7;
+                                    color:{muted};">
                           Curated from the last 24 hours.<br/>
                           Reader links included.
                         </div>
@@ -326,7 +361,8 @@ def build_html():
 
               <!-- Footer -->
               <tr>
-                <td style="padding:16px;text-align:center;font-family:{font};font-size:11px;color:{muted};">
+                <td style="padding:16px;text-align:center;font-family:{font};
+                           font-size:11px !important;color:{muted};">
                   © The 2k Times · Delivered daily at 05:30
                 </td>
               </tr>
@@ -388,4 +424,3 @@ with smtplib.SMTP(SMTP_HOST, SMTP_PORT) as server:
     server.send_message(msg)
 
 print("Edition sent.")
-
