@@ -28,7 +28,7 @@ TZ = ZoneInfo("Europe/London")
 # ----------------------------
 now_uk = datetime.now(TZ)
 window_start = now_uk - timedelta(hours=24)
-subject = f"The 2k Times, {now_uk.strftime('%d.%m.%Y')} · TEST {now_uk.strftime('%H:%M')}"
+subject = f"The 2k Times, {now_uk.strftime('%d.%m.%Y')}"
 
 # ----------------------------
 # Sources (World Headlines)
