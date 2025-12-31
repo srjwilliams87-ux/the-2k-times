@@ -7,16 +7,12 @@ from zoneinfo import ZoneInfo
 
 import feedparser
 
-# ----------------------------
-# Environment variables (Render)
-# ----------------------------
 MAILGUN_DOMAIN = os.environ.get("MAILGUN_DOMAIN")
 EMAIL_TO = os.environ.get("EMAIL_TO")
 EMAIL_FROM_NAME = os.environ.get("EMAIL_FROM_NAME", "The 2k Times")
 SMTP_USER = os.environ.get("MAILGUN_SMTP_USER")
 SMTP_PASS = os.environ.get("MAILGUN_SMTP_PASS")
 
-# NEW: Reader base URL (your onrender domain)
 READER_BASE_URL = (os.environ.get("READER_BASE_URL", "https://the-2k-times.onrender.com") or "").rstrip("/")
 
 if not all([MAILGUN_DOMAIN, EMAIL_TO, SMTP_USER, SMTP_PASS]):
@@ -24,9 +20,6 @@ if not all([MAILGUN_DOMAIN, EMAIL_TO, SMTP_USER, SMTP_PASS]):
 
 TZ = ZoneInfo("Europe/London")
 
-# ----------------------------
-# Time window: last 24 hours
-# ----------------------------
 now_uk = datetime.now(TZ)
 window_start = now_uk - timedelta(hours=24)
 subject = f"The 2k Times, {now_uk.strftime('%d.%m.%Y')}"
@@ -36,18 +29,10 @@ WORLD_FEEDS = [
     "https://feeds.reuters.com/Reuters/worldNews",
 ]
 
-# ----------------------------
-# Helpers
-# ----------------------------
-def clean_text_link(url: str) -> str:
-    """
-    Clean Text Link now points to your reader service:
-    https://the-2k-times.onrender.com/read?url=<article>
-    """
+def reader_link(url: str) -> str:
     url = (url or "").strip()
     if not url:
         return ""
-    # Reader service
     return f"{READER_BASE_URL}/read?url={url}"
 
 def strip_html(text: str) -> str:
@@ -72,12 +57,9 @@ def looks_like_low_value(title: str) -> bool:
     t = (title or "").lower()
     return any(w in t for w in ["live", "minute-by-minute", "as it happened"])
 
-# ----------------------------
-# Collect articles
-# ----------------------------
-def collect_articles():
+def collect_articles(feed_urls, limit):
     articles = []
-    for feed_url in WORLD_FEEDS:
+    for feed_url in feed_urls:
         feed = feedparser.parse(feed_url)
         for e in feed.entries:
             title = getattr(e, "title", "").strip()
@@ -96,30 +78,26 @@ def collect_articles():
             articles.append({
                 "title": title,
                 "summary": two_sentence_summary(summary_raw),
-                "article_url": link,
-                "clean_url": clean_text_link(link),
+                "url": link,
+                "reader": reader_link(link),
                 "published": published,
             })
 
     articles.sort(key=lambda x: x["published"], reverse=True)
 
-    # de-dupe by title
     seen = set()
     unique = []
     for a in articles:
-        key = a["title"].lower()
-        if key in seen:
+        k = a["title"].lower()
+        if k in seen:
             continue
-        seen.add(key)
+        seen.add(k)
         unique.append(a)
 
-    return unique[:3]  # top 3 world headlines
+    return unique[:limit]
 
-world_items = collect_articles()
+world_items = collect_articles(WORLD_FEEDS, limit=3)
 
-# ----------------------------
-# HTML Newspaper Layout
-# ----------------------------
 def esc(s: str) -> str:
     return (
         (s or "")
@@ -176,28 +154,13 @@ def build_html():
                 </div>
 
                 <div style="margin-top:12px;font-size:13px;">
-                  <a href="{esc(it['article_url'])}" style="color:#6ea8ff;text-decoration:none;">
-                    📰 Article Link
-                  </a>
-                  &nbsp;|&nbsp;
-                  <a href="{esc(it['clean_url'])}" style="color:#6ea8ff;text-decoration:none;">
-                    📄 Clean Text Link
+                  <a href="{esc(it['reader'])}" style="color:#6ea8ff;text-decoration:none;">
+                    📄 Read in Reader
                   </a>
                 </div>
               </td>
             </tr>
             """)
-
-    # Placeholders for next sections
-    for section in ["UK POLITICS", "RUGBY UNION", "PUNK ROCK"]:
-        rows.append(f"""
-        <tr>
-          <td style="padding:16px;border-bottom:1px solid #333;">
-            <div style="font-size:14px;font-weight:800;letter-spacing:1px;">{section}</div>
-            <div style="margin-top:8px;color:#bbb;font-size:13px;">(Placeholder — next step)</div>
-          </td>
-        </tr>
-        """)
 
     return f"""
     <html>
@@ -218,9 +181,7 @@ def build_html():
 
 html_body = build_html()
 
-# ----------------------------
-# Plain-text fallback
-# ----------------------------
+# Plain-text fallback: also remove "Article" link; keep reader link only
 plain_lines = [f"THE 2K TIMES — {now_uk.strftime('%d.%m.%Y')}\n", "WORLD HEADLINES\n"]
 if not world_items:
     plain_lines.append("No qualifying world headlines in the last 24 hours.\n")
@@ -228,19 +189,16 @@ else:
     for i, it in enumerate(world_items, start=1):
         plain_lines.append(f"{i}) {it['title']}")
         plain_lines.append(it["summary"])
-        plain_lines.append(f"Article: {it['article_url']}")
-        plain_lines.append(f"Clean:  {it['clean_url']}\n")
+        plain_lines.append(f"Read: {it['reader']}\n")
 
 plain_body = "\n".join(plain_lines)
 
-# ----------------------------
-# Send email (HTML first for Spark)
-# ----------------------------
 msg = EmailMessage()
 msg["Subject"] = subject
 msg["From"] = f"{EMAIL_FROM_NAME} <postmaster@{MAILGUN_DOMAIN}>"
 msg["To"] = EMAIL_TO
 
+# HTML first so Spark renders it
 msg.set_content(html_body, subtype="html")
 msg.add_alternative(plain_body, subtype="plain")
 
