@@ -10,7 +10,7 @@ import feedparser
 # ----------------------------
 # DEBUG / VERSION
 # ----------------------------
-TEMPLATE_VERSION = "v-newspaper-10"
+TEMPLATE_VERSION = "v-newspaper-11"
 DEBUG_SUBJECT = True  # set False when you're happy
 
 # ----------------------------
@@ -44,11 +44,44 @@ subject = (
 )
 
 # ----------------------------
-# SOURCES (World Headlines)
+# FEEDS (by section)
 # ----------------------------
-WORLD_FEEDS = [
-    "https://feeds.bbci.co.uk/news/world/rss.xml",
-    "https://feeds.reuters.com/Reuters/worldNews",
+SECTIONS = [
+    {
+        "key": "world",
+        "name": "WORLD HEADLINES",
+        "limit": 3,
+        "feeds": [
+            "https://feeds.bbci.co.uk/news/world/rss.xml",
+            "https://feeds.reuters.com/Reuters/worldNews",
+        ],
+    },
+    {
+        "key": "uk_politics",
+        "name": "UK POLITICS",
+        "limit": 2,
+        "feeds": [
+            "https://feeds.bbci.co.uk/news/politics/rss.xml",
+            "https://feeds.reuters.com/reuters/UKdomesticNews",
+        ],
+    },
+    {
+        "key": "rugby_union",
+        "name": "RUGBY UNION",
+        "limit": 5,
+        "feeds": [
+            "https://www.bbc.co.uk/sport/rugby-union/rss.xml",
+        ],
+    },
+    {
+        "key": "punk_rock",
+        "name": "PUNK ROCK",
+        "limit": 5,
+        "feeds": [
+            # You can swap/add better sources later. This is a safe starter set.
+            "https://www.punknews.org/rss",
+        ],
+    },
 ]
 
 # ----------------------------
@@ -87,6 +120,17 @@ def parse_time(entry):
 def looks_like_low_value(title: str) -> bool:
     t = (title or "").lower()
     return any(w in t for w in ["live", "minute-by-minute", "as it happened"])
+
+
+def esc(s: str) -> str:
+    return (
+        (s or "")
+        .replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+        .replace('"', "&quot;")
+        .replace("'", "&#39;")
+    )
 
 
 def collect_articles(feed_urls, limit):
@@ -130,36 +174,27 @@ def collect_articles(feed_urls, limit):
     return unique[:limit]
 
 
-def esc(s: str) -> str:
-    return (
-        (s or "")
-        .replace("&", "&amp;")
-        .replace("<", "&lt;")
-        .replace(">", "&gt;")
-        .replace('"', "&quot;")
-        .replace("'", "&#39;")
-    )
-
-
-world_items = collect_articles(WORLD_FEEDS, limit=3)
+# ----------------------------
+# COLLECT ALL SECTIONS
+# ----------------------------
+section_items = {}
+for s in SECTIONS:
+    section_items[s["key"]] = collect_articles(s["feeds"], s["limit"])
 
 # ----------------------------
 # HTML (Newspaper)
 # ----------------------------
 def build_html():
     outer_bg = "#111111"
-    paper = "#2b2a26"     # dark “paper”
+    paper = "#2b2a26"
     ink = "#f2f2f2"
     muted = "#c8c8c8"
     link = "#8ab4ff"
-
-    # ✅ all dividers use the SAME thinnest weight
-    rule = "#4a4a4a"
+    rule = "#4a4a4a"  # single thin rule everywhere
 
     font = '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif'
     date_line = now_uk.strftime("%d.%m.%Y")
 
-    # Prevent client “font boosting”
     size_fix_inline = "-webkit-text-size-adjust:100%;text-size-adjust:100%;-ms-text-size-adjust:100%;"
 
     style_block = """
@@ -170,29 +205,40 @@ def build_html():
         .divider{display:none!important}
         .colpadL{padding-left:0!important}
         .colpadR{padding-right:0!important}
+        .sectionPad{padding-top:8px!important}
       }
     </style>
     """
 
-    def thin_rule(pad_top="0", pad_bottom="0"):
+    def section_title_row(title: str):
         return f"""
         <tr>
-          <td style="padding:{pad_top} 0 {pad_bottom} 0;{size_fix_inline}">
+          <td style="padding:16px 20px 10px 20px;{size_fix_inline}">
+            <span style="font-family:{font};
+                         font-size:15px !important;
+                         font-weight:900 !important;
+                         letter-spacing:2.2px;
+                         text-transform:uppercase;
+                         color:{ink};
+                         {size_fix_inline}">
+              {esc(title)}
+            </span>
+          </td>
+        </tr>
+        <tr>
+          <td style="padding:0 20px;{size_fix_inline}">
             <div style="height:1px;background:{rule};font-size:0;line-height:0;">&nbsp;</div>
           </td>
         </tr>
         """
 
     def story_block(i, it, lead=False):
-        # ✅ Top Story headline same size as others
         headline_size = "18px"
         headline_weight = "800"
         summary_size = "13.5px"
         summary_weight = "400"
         pad_top = "18px" if i == 1 else "16px"
 
-        # keep the left bar for the top story if you like (it looks good),
-        # but it no longer changes headline size
         left_bar = "border-left:4px solid %s;padding-left:12px;" % ink if lead else ""
 
         kicker_row = ""
@@ -272,25 +318,49 @@ def build_html():
           </tr>
 
           <tr><td style="height:16px;font-size:0;line-height:0;">&nbsp;</td></tr>
-          {thin_rule()}
+          <tr><td style="height:1px;background:{rule};font-size:0;line-height:0;">&nbsp;</td></tr>
         </table>
         """
 
-    # Build world column
-    if world_items:
-        world_html = ""
-        for i, it in enumerate(world_items, start=1):
-            world_html += story_block(i, it, lead=(i == 1))
-    else:
-        world_html = f"""
-        <table width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;{size_fix_inline}">
-          <tr>
-            <td style="padding:18px 0;font-family:{font};color:{muted};font-size:14px;line-height:1.7;{size_fix_inline}">
-              No qualifying world headlines in the last 24 hours.
-            </td>
-          </tr>
-          {thin_rule()}
-        </table>
+    def render_section_items(items, lead_first=False):
+        if not items:
+            return f"""
+            <table width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;{size_fix_inline}">
+              <tr>
+                <td style="padding:18px 0;font-family:{font};color:{muted};font-size:14px;line-height:1.7;{size_fix_inline}">
+                  No qualifying stories in the last 24 hours.
+                </td>
+              </tr>
+              <tr><td style="height:1px;background:{rule};font-size:0;line-height:0;">&nbsp;</td></tr>
+            </table>
+            """
+        out = ""
+        for i, it in enumerate(items, start=1):
+            out += story_block(i, it, lead=(lead_first and i == 1))
+        return out
+
+    # Inside today bullets (auto)
+    inside_lines = []
+    for s in SECTIONS[1:]:  # exclude world in sidebar list if you want
+        count = len(section_items.get(s["key"], []))
+        inside_lines.append(f"• {s['name'].title()} ({count} stories)" if s["key"] != "rugby_union" else f"• Rugby Union ({count} stories)")
+
+    inside_html = "<br/>".join(esc(x) for x in inside_lines) if inside_lines else "• No other sections configured."
+
+    # Build sections HTML: world uses 2-column layout; other sections full-width
+    world = section_items.get("world", [])
+    world_left = render_section_items(world, lead_first=True)
+
+    extra_sections_html = ""
+    for s in SECTIONS[1:]:
+        items = section_items.get(s["key"], [])
+        extra_sections_html += f"""
+        {section_title_row(s["name"])}
+        <tr>
+          <td class="sectionPad" style="padding:12px 20px 22px 20px;{size_fix_inline}">
+            {render_section_items(items, lead_first=False)}
+          </td>
+        </tr>
         """
 
     return f"""
@@ -342,49 +412,26 @@ def build_html():
                 </td>
               </tr>
 
-              <!-- ✅ Removed thick/black bar under masthead -->
+              <!-- Thin rule under masthead -->
               <tr>
                 <td style="padding:0 20px 12px 20px;">
                   <div style="height:1px;background:{rule};font-size:0;line-height:0;">&nbsp;</div>
                 </td>
               </tr>
 
-              <!-- ✅ Section header (ALL CAPS, bold, larger) -->
-              <tr>
-                <td style="padding:16px 20px 10px 20px;">
-                  <span style="font-family:{font};
-                               font-size:15px !important;
-                               font-weight:900 !important;
-                               letter-spacing:2.2px;
-                               text-transform:uppercase;
-                               color:{ink};
-                               {size_fix_inline}">
-                    WORLD HEADLINES
-                  </span>
-                </td>
-              </tr>
+              <!-- WORLD HEADLINES -->
+              {section_title_row("WORLD HEADLINES")}
 
-              <tr>
-                <td style="padding:0 20px;">
-                  <div style="height:1px;background:{rule};font-size:0;line-height:0;">&nbsp;</div>
-                </td>
-              </tr>
-
-              <!-- Content columns -->
               <tr>
                 <td style="padding:12px 20px 22px 20px;">
                   <table width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;{size_fix_inline}">
                     <tr>
-
-                      <!-- Left column -->
                       <td class="stack colpadR" width="50%" valign="top" style="padding-right:12px;">
-                        {world_html}
+                        {world_left}
                       </td>
 
-                      <!-- Divider (same thin rule color) -->
                       <td class="divider" width="1" style="background:{rule};"></td>
 
-                      <!-- Right column -->
                       <td class="stack colpadL" width="50%" valign="top" style="padding-left:12px;">
                         <table width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;{size_fix_inline}">
                           <tr>
@@ -398,7 +445,6 @@ def build_html():
                               INSIDE TODAY
                             </td>
                           </tr>
-
                           <tr><td style="height:10px;font-size:0;line-height:0;">&nbsp;</td></tr>
                           <tr><td style="height:1px;background:{rule};font-size:0;line-height:0;">&nbsp;</td></tr>
                           <tr><td style="height:12px;font-size:0;line-height:0;">&nbsp;</td></tr>
@@ -410,9 +456,7 @@ def build_html():
                                        line-height:1.9;
                                        color:{muted};
                                        {size_fix_inline}">
-                              • UK Politics (2 stories)<br/>
-                              • Rugby Union (top 5)<br/>
-                              • Punk Rock (UK gigs + releases)
+                              {inside_html}
                             </td>
                           </tr>
 
@@ -431,11 +475,13 @@ def build_html():
                           </tr>
                         </table>
                       </td>
-
                     </tr>
                   </table>
                 </td>
               </tr>
+
+              <!-- OTHER SECTIONS -->
+              {extra_sections_html}
 
               <!-- Footer -->
               <tr>
@@ -461,14 +507,18 @@ plain_lines = [
     "",
     f"(Plain-text fallback) {TEMPLATE_VERSION}",
     "",
-    "WORLD HEADLINES",
-    "",
 ]
 
-if not world_items:
-    plain_lines.append("No qualifying world headlines in the last 24 hours.")
-else:
-    for i, it in enumerate(world_items, start=1):
+for s in SECTIONS:
+    plain_lines.append(s["name"])
+    plain_lines.append("")
+    items = section_items.get(s["key"], [])
+    if not items:
+        plain_lines.append("No qualifying stories in the last 24 hours.")
+        plain_lines.append("")
+        continue
+
+    for i, it in enumerate(items, start=1):
         plain_lines.append(f"{i}. {it['title']}")
         plain_lines.append(it["summary"])
         plain_lines.append(f"Read in Reader: {it['reader']}")
@@ -492,7 +542,8 @@ msg.add_alternative(html_body, subtype="html")
 print("Sending:", subject)
 print("TEMPLATE_VERSION:", TEMPLATE_VERSION)
 print("Window (UK):", window_start.isoformat(), "→", now_uk.isoformat())
-print("World headlines:", len(world_items))
+for s in SECTIONS:
+    print(f"{s['name']}: {len(section_items.get(s['key'], []))}")
 print("SMTP:", SMTP_HOST, SMTP_PORT)
 print("Reader base:", READER_BASE_URL)
 
