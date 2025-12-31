@@ -136,9 +136,10 @@ def build_html():
     rule = "#c9c4b8"
     link = "#0b57d0"
 
+    font_stack = '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif'
+
     date_line = now_uk.strftime("%d.%m.%Y")
 
-    # Each story block
     def story_row(i, it, lead=False):
         headline_size = "22px" if lead else "18px"
         summary_size = "15px" if lead else "14px"
@@ -147,14 +148,14 @@ def build_html():
         return f"""
           <tr>
             <td style="padding:{top_pad} 0 12px 0;">
-              <div style="font-family:Georgia,serif;font-size:{headline_size};font-weight:700;line-height:1.25;color:{ink};">
+              <div style="font-family:{font_stack};font-size:{headline_size};font-weight:800;line-height:1.3;color:{ink};">
                 {i}. {esc(it['title'])}
               </div>
-              <div style="margin-top:8px;font-family:Georgia,serif;font-size:{summary_size};line-height:1.65;color:{muted};">
+              <div style="margin-top:8px;font-family:{font_stack};font-size:{summary_size};line-height:1.65;color:{muted};font-weight:400;">
                 {esc(it['summary'])}
               </div>
-              <div style="margin-top:10px;font-family:Arial,Helvetica,sans-serif;font-size:13px;">
-                <a href="{esc(it['reader'])}" style="color:{link};text-decoration:none;font-weight:700;">
+              <div style="margin-top:10px;font-family:{font_stack};font-size:13px;font-weight:600;">
+                <a href="{esc(it['reader'])}" style="color:{link};text-decoration:none;">
                   Read in Reader →
                 </a>
               </div>
@@ -167,12 +168,11 @@ def build_html():
           </tr>
         """
 
-    # Build world items HTML
     world_html = ""
     if not world_items:
         world_html = f"""
           <tr>
-            <td style="padding:12px 0 12px 0;font-family:Georgia,serif;color:{muted};font-size:15px;line-height:1.7;">
+            <td style="padding:12px 0;font-family:{font_stack};color:{muted};font-size:15px;line-height:1.7;">
               No qualifying world headlines in the last 24 hours.
             </td>
           </tr>
@@ -182,44 +182,34 @@ def build_html():
         for i, it in enumerate(world_items, start=1):
             world_html += story_row(i, it, lead=(i == 1))
 
-    # Hybrid responsive CSS:
-    # - On desktop, two columns sit side-by-side
-    # - On mobile, columns become 100% width (stacked)
-    #
-    # Gmail/Spark generally respect style blocks. Outlook ignores media queries,
-    # but will still show columns side-by-side (acceptable).
-    style_block = f"""
+    style_block = """
     <style type="text/css">
-      /* Some clients add blue link styling */
-      a {{ text-decoration:none; }}
-      /* Mobile stacking */
-      @media screen and (max-width: 640px) {{
-        .container {{ width: 100% !important; }}
-        .stack {{ display: block !important; width: 100% !important; max-width: 100% !important; }}
-        .stack-pad {{ padding-left: 0 !important; padding-right: 0 !important; }}
-        .divider {{ display: none !important; }}
-      }}
+      a { text-decoration:none; }
+      @media screen and (max-width: 640px) {
+        .container { width: 100% !important; }
+        .stack { display:block !important; width:100% !important; max-width:100% !important; }
+        .stack-pad { padding-left:0 !important; padding-right:0 !important; }
+        .divider { display:none !important; }
+      }
     </style>
     """
 
-    # “Inside today” sidebar content
     inside_today = f"""
-      <div style="font-family:Arial,Helvetica,sans-serif;font-size:13px;font-weight:800;letter-spacing:2px;text-transform:uppercase;color:{ink};">
+      <div style="font-family:{font_stack};font-size:13px;font-weight:800;letter-spacing:1.5px;text-transform:uppercase;color:{ink};">
         Inside today
       </div>
       <div style="height:1px;background:{rule};margin:10px 0 12px 0;"></div>
-      <div style="font-family:Georgia,serif;font-size:15px;line-height:1.75;color:{muted};">
+      <div style="font-family:{font_stack};font-size:14px;line-height:1.75;color:{muted};">
         • UK Politics (2 stories)<br/>
         • Rugby Union (top 5)<br/>
         • Punk Rock (UK gigs + releases)
       </div>
-      <div style="margin-top:14px;font-family:Arial,Helvetica,sans-serif;font-size:12px;color:{muted};line-height:1.6;">
+      <div style="margin-top:14px;font-family:{font_stack};font-size:12px;color:{muted};line-height:1.6;">
         Curated from the last 24 hours.<br/>
-        Reader links are clean + readable, with “Open original”.
+        Clean reader links included.
       </div>
     """
 
-    # Email HTML
     html = f"""
     <html>
       <head>
@@ -228,23 +218,24 @@ def build_html():
         {style_block}
       </head>
       <body style="margin:0;padding:0;background:{outer_bg};">
-        <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;background:{outer_bg};">
+        <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:{outer_bg};">
           <tr>
             <td align="center" style="padding:18px;">
               <table role="presentation" class="container" width="720" cellpadding="0" cellspacing="0"
-                     style="border-collapse:collapse;background:{paper};border-radius:14px;overflow:hidden;">
-                
+                     style="background:{paper};border-radius:14px;overflow:hidden;">
+
                 <!-- Masthead -->
                 <tr>
-                  <td style="padding:18px 18px 10px 18px;text-align:center;">
-                    <div style="font-family:Georgia,serif;font-size:42px;font-weight:900;letter-spacing:0.5px;color:{ink};">
+                  <td style="padding:20px 18px 10px 18px;text-align:center;">
+                    <div style="font-family:{font_stack};font-size:40px;font-weight:900;color:{ink};">
                       The 2k Times
                     </div>
-                    <div style="margin-top:6px;font-family:Arial,Helvetica,sans-serif;font-size:13px;color:{muted};letter-spacing:1px;text-transform:uppercase;">
-                      {date_line} &nbsp;•&nbsp; Daily Edition
+                    <div style="margin-top:6px;font-family:{font_stack};font-size:13px;color:{muted};letter-spacing:1px;text-transform:uppercase;">
+                      {date_line} · Daily Edition
                     </div>
                   </td>
                 </tr>
+
                 <tr>
                   <td style="padding:0 18px 8px 18px;">
                     <div style="height:1px;background:{rule};"></div>
@@ -255,40 +246,34 @@ def build_html():
                 <!-- Section header -->
                 <tr>
                   <td style="padding:14px 18px 10px 18px;">
-                    <div style="font-family:Arial,Helvetica,sans-serif;font-size:13px;font-weight:800;letter-spacing:2px;text-transform:uppercase;color:{ink};">
+                    <div style="font-family:{font_stack};font-size:13px;font-weight:800;letter-spacing:2px;text-transform:uppercase;color:{ink};">
                       World Headlines
                     </div>
                   </td>
                 </tr>
+
                 <tr>
                   <td style="padding:0 18px;">
                     <div style="height:1px;background:{rule};"></div>
                   </td>
                 </tr>
 
-                <!-- Two columns (hybrid) -->
+                <!-- Columns -->
                 <tr>
                   <td style="padding:14px 18px 18px 18px;">
-                    <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;">
+                    <table role="presentation" width="100%">
                       <tr>
-
-                        <!-- LEFT COLUMN -->
-                        <td class="stack" valign="top" width="50%" style="padding-right:10px;">
-                          <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;">
+                        <td class="stack" width="50%" valign="top" style="padding-right:10px;">
+                          <table role="presentation" width="100%">
                             {world_html}
                           </table>
                         </td>
 
-                        <!-- DIVIDER -->
-                        <td class="divider" width="1" valign="top" style="background:{rule};font-size:0;line-height:0;">&nbsp;</td>
+                        <td class="divider" width="1" style="background:{rule};"></td>
 
-                        <!-- RIGHT COLUMN -->
-                        <td class="stack stack-pad" valign="top" width="50%" style="padding-left:10px;">
-                          <div style="padding:2px 0 0 0;">
-                            {inside_today}
-                          </div>
+                        <td class="stack stack-pad" width="50%" valign="top" style="padding-left:10px;">
+                          {inside_today}
                         </td>
-
                       </tr>
                     </table>
                   </td>
@@ -296,8 +281,9 @@ def build_html():
 
                 <!-- Footer -->
                 <tr>
-                  <td style="padding:14px 18px 18px 18px;text-align:center;font-family:Arial,Helvetica,sans-serif;font-size:11px;color:{muted};">
-                    © The 2k Times · Delivered daily at 05:30 · Reader links include “Open original”.
+                  <td style="padding:14px 18px 18px 18px;text-align:center;
+                             font-family:{font_stack};font-size:11px;color:{muted};">
+                    © The 2k Times · Delivered daily at 05:30
                   </td>
                 </tr>
 
