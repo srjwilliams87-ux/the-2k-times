@@ -12,7 +12,7 @@ import requests
 # ----------------------------
 # DEBUG / VERSION
 # ----------------------------
-TEMPLATE_VERSION = "v-newspaper-13"
+TEMPLATE_VERSION = "v-newspaper-13b"
 DEBUG_SUBJECT = True  # set False when you're happy
 
 # ----------------------------
@@ -60,7 +60,6 @@ UK_POLITICS_FEEDS = [
 
 RUGBY_UNION_FEEDS = [
     "https://feeds.bbci.co.uk/sport/rugby-union/rss.xml",
-    "https://feeds.bbci.co.uk/sport/rss.xml",
 ]
 
 PUNK_ROCK_FEEDS = [
@@ -74,7 +73,6 @@ def reader_link(url: str) -> str:
     url = (url or "").strip()
     if not url:
         return ""
-    # URL-encode so reader works reliably
     return f"{READER_BASE_URL}/read?url={quote_plus(url)}"
 
 
@@ -158,6 +156,15 @@ def esc(s: str) -> str:
     )
 
 
+def fmt_c(v):
+    if v is None:
+        return "—"
+    try:
+        return f"{int(round(float(v)))}°C"
+    except Exception:
+        return "—"
+
+
 # ----------------------------
 # DATA
 # ----------------------------
@@ -172,10 +179,11 @@ punk_items = collect_articles(PUNK_ROCK_FEEDS, limit=3)
 CARDIFF_LAT = 51.4816
 CARDIFF_LON = -3.1791
 
+
 def get_cardiff_weather():
     """
     Uses Open-Meteo (no API key).
-    Returns dict with: temp, feels, hi, lo (°C)
+    Returns dict with: temp, feels, hi, lo (°C) and sunrise/sunset (HH:MM).
     """
     try:
         url = (
@@ -199,7 +207,6 @@ def get_cardiff_weather():
         sunrise = (daily.get("sunrise") or [""])[0]
         sunset = (daily.get("sunset") or [""])[0]
 
-        # Format sunrise/sunset to HH:MM
         def hhmm(dt_str: str) -> str:
             if not dt_str:
                 return "—"
@@ -219,26 +226,31 @@ def get_cardiff_weather():
         }
     except Exception:
         return {
-            "temp": None, "feels": None, "hi": None, "lo": None,
-            "sunrise": "—", "sunset": "—",
+            "temp": None,
+            "feels": None,
+            "hi": None,
+            "lo": None,
+            "sunrise": "—",
+            "sunset": "—",
         }
 
+
 wx = get_cardiff_weather()
+
+# ✅ These MUST be module-level so plain text can use them too
+wx_line = f"{fmt_c(wx.get('temp'))} (feels {fmt_c(wx.get('feels'))}) · H {fmt_c(wx.get('hi'))} / L {fmt_c(wx.get('lo'))}"
+sunrise_text = wx.get("sunrise", "—")
+sunset_text = wx.get("sunset", "—")
 
 # ----------------------------
 # WHO'S IN SPACE
 # ----------------------------
 def get_whos_in_space():
-    """
-    Best-effort: Open Notify (sometimes flaky) + fallback.
-    """
-    # Primary
     try:
         r = requests.get("http://api.open-notify.org/astros.json", timeout=10)
         r.raise_for_status()
         data = r.json()
         people = data.get("people", []) or []
-        # Normalize to "Name (Craft)"
         out = []
         for p in people:
             name = (p.get("name") or "").strip()
@@ -249,9 +261,8 @@ def get_whos_in_space():
             return out
     except Exception:
         pass
-
-    # Fallback (very simple): show unavailable
     return []
+
 
 astronauts = get_whos_in_space()
 
@@ -263,14 +274,12 @@ def build_html():
     paper = "#f7f5ef"
     ink = "#111111"
     muted = "#4a4a4a"
-    rule = "#c9c4b8"
     rule_light = "#ddd8cc"
     link = "#0b57d0"
 
     font = '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif'
     date_line = now_uk.strftime("%d.%m.%Y")
 
-    # Prevent client “font boosting”
     size_fix_inline = "-webkit-text-size-adjust:100%;text-size-adjust:100%;-ms-text-size-adjust:100%;"
 
     style_block = """
@@ -289,8 +298,28 @@ def build_html():
     def thin_rule():
         return f'<tr><td style="height:1px;background:{rule_light};font-size:0;line-height:0;">&nbsp;</td></tr>'
 
+    def section_header(label, emoji):
+        return f"""
+        <tr>
+          <td style="padding:18px 20px 10px 20px;">
+            <span style="font-family:{font};
+                         font-size:13px !important;
+                         font-weight:900 !important;
+                         letter-spacing:2px;
+                         text-transform:uppercase;
+                         color:{ink};{size_fix_inline}">
+              {emoji} {esc(label)}
+            </span>
+          </td>
+        </tr>
+        <tr>
+          <td style="padding:0 20px;">
+            <div style="height:1px;background:{rule_light};"></div>
+          </td>
+        </tr>
+        """
+
     def story_block(i, it, lead=False, show_kicker=False):
-        # Top Story headline now same as other headlines (per your request)
         headline_size = "20px" if lead else "18px"
         headline_weight = "800" if lead else "700"
         summary_size = "14.5px" if lead else "13.5px"
@@ -298,6 +327,7 @@ def build_html():
         pad_top = "18px" if lead else "14px"
 
         left_bar = f"border-left:4px solid {ink};padding-left:12px;" if lead else ""
+
         kicker_row = ""
         if show_kicker:
             kicker_row = f"""
@@ -373,28 +403,6 @@ def build_html():
         </table>
         """
 
-    def section_header(label, emoji):
-        return f"""
-        <tr>
-          <td style="padding:18px 20px 10px 20px;">
-            <span style="font-family:{font};
-                         font-size:13px !important;
-                         font-weight:900 !important;
-                         letter-spacing:2px;
-                         text-transform:uppercase;
-                         color:{ink};{size_fix_inline}">
-              {emoji} {esc(label)}
-            </span>
-          </td>
-        </tr>
-        <tr>
-          <td style="padding:0 20px;">
-            <div style="height:1px;background:{rule_light};"></div>
-          </td>
-        </tr>
-        """
-
-    # Build story blocks for each section
     def build_story_list(items, lead_first=False):
         if not items:
             return f"""
@@ -415,26 +423,13 @@ def build_html():
         return out
 
     world_html = build_story_list(world_items, lead_first=True)
-
-    # Full-width sections after the first block (not in sidebar)
     uk_pol_html = build_story_list(uk_politics_items, lead_first=False)
     rugby_html = build_story_list(rugby_items, lead_first=False)
     punk_html = build_story_list(punk_items, lead_first=False)
 
-    # Sidebar content strings
-    def fmt_c(v):
-        if v is None:
-            return "—"
-        try:
-            return f"{int(round(float(v)))}°C"
-        except Exception:
-            return "—"
-
-    wx_line = f"{fmt_c(wx.get('temp'))} (feels {fmt_c(wx.get('feels'))}) · H {fmt_c(wx.get('hi'))} / L {fmt_c(wx.get('lo'))}"
-    sunrise_line = f"Sunrise: <b>{esc(wx.get('sunrise','—'))}</b> &nbsp; • &nbsp; Sunset: <b>{esc(wx.get('sunset','—'))}</b>"
+    sunrise_line_html = f"Sunrise: <b>{esc(sunrise_text)}</b> &nbsp; • &nbsp; Sunset: <b>{esc(sunset_text)}</b>"
 
     if astronauts:
-        # show up to 8, then "+ N more"
         shown = astronauts[:8]
         extra = len(astronauts) - len(shown)
         who_lines = "<br/>".join(esc(x) for x in shown)
@@ -443,19 +438,16 @@ def build_html():
     else:
         who_lines = f"<span style='color:{muted};'>Unavailable right now.</span>"
 
-    # INSIDE TODAY: align with Top Story by adding same top padding as story lead
-    inside_pad_top = "18px"  # matches lead story pad_top in story_block
+    inside_pad_top = "18px"
 
-    html = f"""
+    return f"""
     <html>
     <head>
       <meta name="viewport" content="width=device-width, initial-scale=1">
       {style_block}
     </head>
-
     <body style="margin:0;background:{outer_bg};{size_fix_inline}">
-      <table width="100%" cellpadding="0" cellspacing="0"
-             style="border-collapse:collapse;background:{outer_bg};{size_fix_inline}">
+      <table width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;background:{outer_bg};{size_fix_inline}">
         <tr>
           <td align="center" style="padding:18px;{size_fix_inline}">
             <table class="container" width="720" cellpadding="0" cellspacing="0"
@@ -466,72 +458,46 @@ def build_html():
                 <td align="center" style="padding:28px 20px 14px 20px;{size_fix_inline}">
                   <table width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;">
                     <tr>
-                      <td align="center" style="font-family:{font};
-                                                font-size:48px !important;
-                                                font-weight:900 !important;
-                                                color:{ink};
-                                                line-height:1.05;
-                                                {size_fix_inline}">
-                        <span style="font-size:48px !important;font-weight:900 !important;">
-                          The 2k Times
-                        </span>
+                      <td align="center" style="font-family:{font};font-size:48px !important;font-weight:900 !important;color:{ink};line-height:1.05;{size_fix_inline}">
+                        <span style="font-size:48px !important;font-weight:900 !important;">The 2k Times</span>
                       </td>
                     </tr>
                     <tr><td style="height:10px;font-size:0;line-height:0;">&nbsp;</td></tr>
                     <tr>
-                      <td align="center" style="font-family:{font};
-                                                font-size:12px !important;
-                                                font-weight:700 !important;
-                                                letter-spacing:2px;
-                                                text-transform:uppercase;
-                                                color:{muted};
-                                                {size_fix_inline}">
-                        <span style="font-size:12px !important;font-weight:700 !important;">
-                          {date_line} · Daily Edition · {TEMPLATE_VERSION}
-                        </span>
+                      <td align="center" style="font-family:{font};font-size:12px !important;font-weight:700 !important;letter-spacing:2px;text-transform:uppercase;color:{muted};{size_fix_inline}">
+                        <span style="font-size:12px !important;font-weight:700 !important;">{date_line} · Daily Edition · {TEMPLATE_VERSION}</span>
                       </td>
                     </tr>
                   </table>
                 </td>
               </tr>
 
-              <!-- Single thin rule under masthead (remove heavy/black feel) -->
+              <!-- Thin rule under masthead -->
               <tr>
                 <td style="padding:0 20px 12px 20px;">
                   <div style="height:1px;background:{rule_light};"></div>
                 </td>
               </tr>
 
-              <!-- WORLD HEADLINES -->
+              <!-- WORLD -->
               {section_header("World Headlines", "🌍")}
 
-              <!-- Two-column block -->
               <tr>
                 <td style="padding:0 20px 22px 20px;">
                   <table width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;">
                     <tr>
 
-                      <!-- Left column -->
                       <td class="stack colpadR" width="58%" valign="top" style="padding-right:12px;">
                         {world_html}
                       </td>
 
-                      <!-- Divider -->
                       <td class="divider" width="1" style="background:{rule_light};"></td>
 
-                      <!-- Right column -->
                       <td class="stack colpadL mtMobile" width="42%" valign="top" style="padding-left:12px;padding-top:{inside_pad_top};">
                         <table width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;">
 
-                          <!-- Inside today -->
                           <tr>
-                            <td style="font-family:{font};
-                                       font-size:13px !important;
-                                       font-weight:900 !important;
-                                       letter-spacing:2px;
-                                       text-transform:uppercase;
-                                       color:{ink};
-                                       {size_fix_inline}">
+                            <td style="font-family:{font};font-size:13px !important;font-weight:900 !important;letter-spacing:2px;text-transform:uppercase;color:{ink};{size_fix_inline}">
                               🗞️ Inside today
                             </td>
                           </tr>
@@ -540,12 +506,7 @@ def build_html():
                           <tr><td style="height:12px;font-size:0;line-height:0;">&nbsp;</td></tr>
 
                           <tr>
-                            <td style="font-family:{font};
-                                       font-size:15px !important;
-                                       font-weight:600 !important;
-                                       line-height:1.9;
-                                       color:{muted};
-                                       {size_fix_inline}">
+                            <td style="font-family:{font};font-size:15px !important;font-weight:600 !important;line-height:1.9;color:{muted};{size_fix_inline}">
                               • UK Politics ({len(uk_politics_items)} stories)<br/>
                               • Rugby Union ({len(rugby_items)} stories)<br/>
                               • Punk Rock ({len(punk_items)} stories)
@@ -555,14 +516,8 @@ def build_html():
                           <tr><td style="height:14px;font-size:0;line-height:0;">&nbsp;</td></tr>
 
                           <tr>
-                            <td style="font-family:{font};
-                                       font-size:12px !important;
-                                       font-weight:500;
-                                       line-height:1.7;
-                                       color:{muted};
-                                       {size_fix_inline}">
-                              Curated from the last 24 hours.<br/>
-                              Reader links included.
+                            <td style="font-family:{font};font-size:12px !important;font-weight:500;line-height:1.7;color:{muted};{size_fix_inline}">
+                              Curated from the last 24 hours.<br/>Reader links included.
                             </td>
                           </tr>
 
@@ -570,78 +525,42 @@ def build_html():
                           <tr><td style="height:1px;background:{rule_light};font-size:0;line-height:0;">&nbsp;</td></tr>
                           <tr><td style="height:16px;font-size:0;line-height:0;">&nbsp;</td></tr>
 
-                          <!-- Weather -->
                           <tr>
-                            <td style="font-family:{font};
-                                       font-size:13px !important;
-                                       font-weight:900 !important;
-                                       letter-spacing:2px;
-                                       text-transform:uppercase;
-                                       color:{ink};
-                                       {size_fix_inline}">
+                            <td style="font-family:{font};font-size:13px !important;font-weight:900 !important;letter-spacing:2px;text-transform:uppercase;color:{ink};{size_fix_inline}">
                               ☁️ Weather · Cardiff
                             </td>
                           </tr>
                           <tr><td style="height:10px;font-size:0;line-height:0;">&nbsp;</td></tr>
                           <tr>
-                            <td style="font-family:{font};
-                                       font-size:15px !important;
-                                       font-weight:700 !important;
-                                       line-height:1.5;
-                                       color:{ink};
-                                       {size_fix_inline}">
+                            <td style="font-family:{font};font-size:15px !important;font-weight:700 !important;line-height:1.5;color:{ink};{size_fix_inline}">
                               {esc(wx_line)}
                             </td>
                           </tr>
 
                           <tr><td style="height:16px;font-size:0;line-height:0;">&nbsp;</td></tr>
 
-                          <!-- Sunrise / Sunset -->
                           <tr>
-                            <td style="font-family:{font};
-                                       font-size:13px !important;
-                                       font-weight:900 !important;
-                                       letter-spacing:2px;
-                                       text-transform:uppercase;
-                                       color:{ink};
-                                       {size_fix_inline}">
+                            <td style="font-family:{font};font-size:13px !important;font-weight:900 !important;letter-spacing:2px;text-transform:uppercase;color:{ink};{size_fix_inline}">
                               🌅 Sunrise / Sunset
                             </td>
                           </tr>
                           <tr><td style="height:10px;font-size:0;line-height:0;">&nbsp;</td></tr>
                           <tr>
-                            <td style="font-family:{font};
-                                       font-size:14px !important;
-                                       font-weight:500;
-                                       line-height:1.7;
-                                       color:{muted};
-                                       {size_fix_inline}">
-                              {sunrise_line}
+                            <td style="font-family:{font};font-size:14px !important;font-weight:500;line-height:1.7;color:{muted};{size_fix_inline}">
+                              {sunrise_line_html}
                             </td>
                           </tr>
 
                           <tr><td style="height:16px;font-size:0;line-height:0;">&nbsp;</td></tr>
 
-                          <!-- Who's in space -->
                           <tr>
-                            <td style="font-family:{font};
-                                       font-size:13px !important;
-                                       font-weight:900 !important;
-                                       letter-spacing:2px;
-                                       text-transform:uppercase;
-                                       color:{ink};
-                                       {size_fix_inline}">
+                            <td style="font-family:{font};font-size:13px !important;font-weight:900 !important;letter-spacing:2px;text-transform:uppercase;color:{ink};{size_fix_inline}">
                               🚀 Who&apos;s in space
                             </td>
                           </tr>
                           <tr><td style="height:10px;font-size:0;line-height:0;">&nbsp;</td></tr>
                           <tr>
-                            <td style="font-family:{font};
-                                       font-size:14px !important;
-                                       font-weight:500;
-                                       line-height:1.6;
-                                       color:{muted};
-                                       {size_fix_inline}">
+                            <td style="font-family:{font};font-size:14px !important;font-weight:500;line-height:1.6;color:{muted};{size_fix_inline}">
                               {who_lines}
                             </td>
                           </tr>
@@ -654,32 +573,18 @@ def build_html():
                 </td>
               </tr>
 
-              <!-- OTHER SECTIONS (full-width) -->
+              <!-- OTHER SECTIONS -->
               {section_header("UK Politics", "🏛️")}
-              <tr>
-                <td style="padding:0 20px 18px 20px;">
-                  {uk_pol_html}
-                </td>
-              </tr>
+              <tr><td style="padding:0 20px 18px 20px;">{uk_pol_html}</td></tr>
 
               {section_header("Rugby Union", "🏉")}
-              <tr>
-                <td style="padding:0 20px 18px 20px;">
-                  {rugby_html}
-                </td>
-              </tr>
+              <tr><td style="padding:0 20px 18px 20px;">{rugby_html}</td></tr>
 
               {section_header("Punk Rock", "🎸")}
-              <tr>
-                <td style="padding:0 20px 18px 20px;">
-                  {punk_html}
-                </td>
-              </tr>
+              <tr><td style="padding:0 20px 18px 20px;">{punk_html}</td></tr>
 
-              <!-- Footer -->
               <tr>
-                <td style="padding:16px;text-align:center;font-family:{font};
-                           font-size:11px !important;color:{muted};{size_fix_inline}">
+                <td style="padding:16px;text-align:center;font-family:{font};font-size:11px !important;color:{muted};{size_fix_inline}">
                   © The 2k Times · Delivered daily at 05:30
                 </td>
               </tr>
@@ -691,7 +596,6 @@ def build_html():
     </body>
     </html>
     """
-    return html
 
 
 # ----------------------------
@@ -703,6 +607,7 @@ plain_lines = [
     f"(Plain-text fallback) {TEMPLATE_VERSION}",
     "",
 ]
+
 
 def append_plain_section(title, items):
     plain_lines.append(title.upper())
@@ -717,15 +622,15 @@ def append_plain_section(title, items):
         plain_lines.append(f"Read in Reader: {it['reader']}")
         plain_lines.append("")
 
+
 append_plain_section("World Headlines", world_items)
 append_plain_section("UK Politics", uk_politics_items)
 append_plain_section("Rugby Union", rugby_items)
 append_plain_section("Punk Rock", punk_items)
 
-# Weather/space quick footer for plain text
 plain_lines.append("CARDIFF WEATHER")
 plain_lines.append(wx_line)
-plain_lines.append(f"Sunrise: {wx.get('sunrise','—')} · Sunset: {wx.get('sunset','—')}")
+plain_lines.append(f"Sunrise: {sunrise_text} · Sunset: {sunset_text}")
 plain_lines.append("")
 plain_lines.append("WHO'S IN SPACE")
 if astronauts:
