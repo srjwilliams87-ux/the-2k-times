@@ -19,15 +19,19 @@ SMTP_PASS = os.environ.get("MAILGUN_SMTP_PASS")
 READER_BASE_URL = (os.environ.get("READER_BASE_URL", "https://the-2k-times.onrender.com") or "").rstrip("/")
 
 if not all([MAILGUN_DOMAIN, EMAIL_TO, SMTP_USER, SMTP_PASS]):
-    raise SystemExit("Missing required environment variables (MAILGUN_DOMAIN, EMAIL_TO, MAILGUN_SMTP_USER, MAILGUN_SMTP_PASS)")
+    raise SystemExit(
+        "Missing required environment variables (MAILGUN_DOMAIN, EMAIL_TO, MAILGUN_SMTP_USER, MAILGUN_SMTP_PASS)"
+    )
 
 TZ = ZoneInfo("Europe/London")
 
 # ----------------------------
-# Time window: last 24 hours
+# Time window: last 24 hours (UK time)
 # ----------------------------
 now_uk = datetime.now(TZ)
 window_start = now_uk - timedelta(hours=24)
+
+# Subject (locked format)
 subject = f"The 2k Times, {now_uk.strftime('%d.%m.%Y')}"
 
 # ----------------------------
@@ -47,19 +51,21 @@ def reader_link(url: str) -> str:
         return ""
     return f"{READER_BASE_URL}/read?url={url}"
 
+
 def strip_html(text: str) -> str:
     text = re.sub(r"<[^>]+>", " ", text or "")
     text = re.sub(r"\s+", " ", text)
     return text.strip()
 
+
 def two_sentence_summary(text: str) -> str:
     text = strip_html(text)
-    # split sentences
     sentences = re.split(r"(?<=[.!?])\s+", text)
     sentences = [s.strip() for s in sentences if len(s.strip()) > 20]
     if not sentences:
         return "Summary unavailable."
     return " ".join(sentences[:2])
+
 
 def parse_time(entry):
     if hasattr(entry, "published_parsed") and entry.published_parsed:
@@ -68,9 +74,11 @@ def parse_time(entry):
         return datetime(*entry.updated_parsed[:6], tzinfo=ZoneInfo("UTC")).astimezone(TZ)
     return None
 
+
 def looks_like_low_value(title: str) -> bool:
     t = (title or "").lower()
     return any(w in t for w in ["live", "minute-by-minute", "as it happened"])
+
 
 def collect_articles(feed_urls, limit):
     articles = []
@@ -89,13 +97,15 @@ def collect_articles(feed_urls, limit):
                 continue
 
             summary_raw = getattr(e, "summary", "") or getattr(e, "description", "") or ""
-            articles.append({
-                "title": title,
-                "summary": two_sentence_summary(summary_raw),
-                "url": link,
-                "reader": reader_link(link),
-                "published": published,
-            })
+            articles.append(
+                {
+                    "title": title,
+                    "summary": two_sentence_summary(summary_raw),
+                    "url": link,
+                    "reader": reader_link(link),
+                    "published": published,
+                }
+            )
 
     # newest first
     articles.sort(key=lambda x: x["published"], reverse=True)
@@ -112,7 +122,6 @@ def collect_articles(feed_urls, limit):
 
     return unique[:limit]
 
-world_items = collect_articles(WORLD_FEEDS, limit=3)
 
 def esc(s: str) -> str:
     return (
@@ -124,8 +133,11 @@ def esc(s: str) -> str:
         .replace("'", "&#39;")
     )
 
+
+world_items = collect_articles(WORLD_FEEDS, limit=3)
+
 # ----------------------------
-# Newspaper HTML (mobile-stacked)
+# Newspaper HTML (mobile stacked, sans-serif hierarchy)
 # ----------------------------
 def build_html():
     outer_bg = "#111111"
@@ -140,42 +152,25 @@ def build_html():
     date_line = now_uk.strftime("%d.%m.%Y")
 
     def story_row(i, it, lead=False):
-     headline_size = "26px" if lead else "18px"
-headline_weight = "900" if lead else "700"
-summary_size = "14px" if lead else "13.5px"
+        headline_size = "26px" if lead else "18px"
+        headline_weight = "900" if lead else "700"
+        summary_size = "15px" if lead else "13.5px"
 
         return f"""
         <tr>
           <td style="padding:18px 0 16px 0;">
-            <div style="
-              font-family:{font};
-              font-size:{headline_size};
-              font-weight:{headline_weight};
-              line-height:1.3;
-              color:{ink};
-            ">
+            <div style="font-family:{font};font-size:{headline_size};font-weight:{headline_weight};
+                        line-height:1.25;color:{ink};">
               {i}. {esc(it['title'])}
             </div>
 
-            <div style="
-  margin-top:10px;
-  font-family:{font_stack};
-  font-size:12px;
-  font-weight:700;
-  letter-spacing:1px;
-  text-transform:uppercase;
-">
-  <a href="..." style="color:{link};text-decoration:none;">
-    Read in Reader →
-  </a>
-</div>
+            <div style="margin-top:8px;font-family:{font};font-size:{summary_size};font-weight:400;
+                        line-height:1.7;color:{muted};">
+              {esc(it['summary'])}
+            </div>
 
-            <div style="
-              margin-top:10px;
-              font-family:{font};
-              font-size:13px;
-              font-weight:600;
-            ">
+            <div style="margin-top:12px;font-family:{font};font-size:12px;font-weight:800;
+                        letter-spacing:1px;text-transform:uppercase;">
               <a href="{esc(it['reader'])}" style="color:{link};text-decoration:none;">
                 Read in Reader →
               </a>
@@ -183,20 +178,18 @@ summary_size = "14px" if lead else "13.5px"
           </td>
         </tr>
         <tr>
-          <td>
-            <div style="height:1px;background:{rule_light};"></div>
-          </td>
+          <td><div style="height:1px;background:{rule_light};"></div></td>
         </tr>
         """
 
-    world_html = ""
     if world_items:
+        world_html = ""
         for i, it in enumerate(world_items, start=1):
             world_html += story_row(i, it, lead=(i == 1))
     else:
         world_html = f"""
         <tr>
-          <td style="padding:18px 0;font-family:{font};color:{muted};font-size:15px;">
+          <td style="padding:18px 0;font-family:{font};color:{muted};font-size:14px;line-height:1.7;">
             No qualifying world headlines in the last 24 hours.
           </td>
         </tr>
@@ -219,53 +212,37 @@ summary_size = "14px" if lead else "13.5px"
       {style_block}
     </head>
     <body style="margin:0;background:{outer_bg};">
-      <table width="100%" cellpadding="0" cellspacing="0">
+      <table width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;">
         <tr>
           <td align="center" style="padding:18px;">
-            <table class="container" width="720" style="background:{paper};border-radius:14px;overflow:hidden;">
+            <table class="container" width="720" cellpadding="0" cellspacing="0"
+                   style="border-collapse:collapse;background:{paper};border-radius:14px;overflow:hidden;">
 
               <!-- Masthead -->
               <tr>
-                <td style="padding:24px 20px 14px 20px;text-align:center;">
-                  <div style="
-                    font-family:{font};
-                    font-size:42px;
-                    font-weight:900;
-                    color:{ink};
-                  ">
+                <td style="padding:26px 20px 14px 20px;text-align:center;">
+                  <div style="font-family:{font};font-size:44px;font-weight:900;color:{ink};line-height:1.05;">
                     The 2k Times
                   </div>
-                  <div style="
-                    margin-top:6px;
-                    font-family:{font};
-                    font-size:13px;
-                    letter-spacing:1.5px;
-                    text-transform:uppercase;
-                    color:{muted};
-                  ">
+                  <div style="margin-top:8px;font-family:{font};font-size:12px;letter-spacing:2px;
+                              text-transform:uppercase;color:{muted};">
                     {date_line} · Daily Edition
                   </div>
                 </td>
               </tr>
 
               <tr>
-                <td style="padding:0 20px;">
+                <td style="padding:0 20px 10px 20px;">
                   <div style="height:3px;background:{ink};"></div>
                   <div style="height:1px;background:{rule};margin-top:6px;"></div>
                 </td>
               </tr>
 
-              <!-- Section Header -->
+              <!-- Section header -->
               <tr>
-                <td style="padding:18px 20px 10px 20px;">
-                  <div style="
-                    font-family:{font};
-                    font-size:12px;
-                    font-weight:800;
-                    letter-spacing:2px;
-                    text-transform:uppercase;
-                    color:{ink};
-                  ">
+                <td style="padding:16px 20px 10px 20px;">
+                  <div style="font-family:{font};font-size:12px;font-weight:900;letter-spacing:2px;
+                              text-transform:uppercase;color:{ink};">
                     World Headlines
                   </div>
                 </td>
@@ -279,40 +256,37 @@ summary_size = "14px" if lead else "13.5px"
 
               <!-- Content -->
               <tr>
-                <td style="padding:10px 20px 22px 20px;">
-                  <table width="100%">
+                <td style="padding:12px 20px 22px 20px;">
+                  <table width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;">
                     <tr>
+                      <!-- Left -->
                       <td class="stack" width="50%" valign="top" style="padding-right:12px;">
-                        <table width="100%">
+                        <table width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;">
                           {world_html}
                         </table>
                       </td>
 
+                      <!-- Divider -->
                       <td class="divider" width="1" style="background:{rule};"></td>
 
+                      <!-- Right -->
                       <td class="stack" width="50%" valign="top" style="padding-left:12px;">
-                        <div style="
-                          font-family:{font};
-                          font-size:13px;
-                          font-weight:800;
-                          letter-spacing:1.5px;
-                          text-transform:uppercase;
-                          color:{ink};
-                        ">
+                        <div style="font-family:{font};font-size:12px;font-weight:900;letter-spacing:2px;
+                                    text-transform:uppercase;color:{ink};">
                           Inside today
                         </div>
 
-                        <div style="height:1px;background:{rule};margin:10px 0;"></div>
+                        <div style="height:1px;background:{rule};margin:10px 0 12px 0;"></div>
 
-                        <div style="
-                          font-family:{font};
-                          font-size:14px;
-                          line-height:1.8;
-                          color:{muted};
-                        ">
+                        <div style="font-family:{font};font-size:14px;line-height:1.9;color:{muted};">
                           • UK Politics (2 stories)<br/>
                           • Rugby Union (top 5)<br/>
                           • Punk Rock (UK gigs + releases)
+                        </div>
+
+                        <div style="margin-top:14px;font-family:{font};font-size:12px;line-height:1.7;color:{muted};">
+                          Curated from the last 24 hours.<br/>
+                          Reader links included.
                         </div>
                       </td>
                     </tr>
@@ -322,13 +296,7 @@ summary_size = "14px" if lead else "13.5px"
 
               <!-- Footer -->
               <tr>
-                <td style="
-                  padding:16px;
-                  text-align:center;
-                  font-family:{font};
-                  font-size:11px;
-                  color:{muted};
-                ">
+                <td style="padding:16px;text-align:center;font-family:{font};font-size:11px;color:{muted};">
                   © The 2k Times · Delivered daily at 05:30
                 </td>
               </tr>
@@ -342,6 +310,7 @@ summary_size = "14px" if lead else "13.5px"
     """
     return html
 
+
 html_body = build_html()
 
 # ----------------------------
@@ -351,15 +320,16 @@ plain_lines = [
     f"THE 2K TIMES — {now_uk.strftime('%d.%m.%Y')}",
     "",
     "WORLD HEADLINES",
-    ""
+    "",
 ]
+
 if not world_items:
     plain_lines.append("No qualifying world headlines in the last 24 hours.")
 else:
     for i, it in enumerate(world_items, start=1):
         plain_lines.append(f"{i}. {it['title']}")
         plain_lines.append(it["summary"])
-        plain_lines.append(f"Read: {it['reader']}")
+        plain_lines.append(f"Read in Reader: {it['reader']}")
         plain_lines.append("")
 
 plain_body = "\n".join(plain_lines).strip() + "\n"
@@ -372,7 +342,7 @@ msg["Subject"] = subject
 msg["From"] = f"{EMAIL_FROM_NAME} <postmaster@{MAILGUN_DOMAIN}>"
 msg["To"] = EMAIL_TO
 
-# Correct multipart/alternative order
+# Ensure multipart/alternative is constructed correctly
 msg.set_content(plain_body)
 msg.add_alternative(html_body, subtype="html")
 
@@ -385,4 +355,4 @@ print("Edition sent:", subject)
 print("World headlines included:", len(world_items))
 print("Window (UK):", window_start.isoformat(), "→", now_uk.isoformat())
 print("Reader base URL:", READER_BASE_URL)
-print("HTML_VERSION = 2025-12-31-02 (hierarchy)")
+
