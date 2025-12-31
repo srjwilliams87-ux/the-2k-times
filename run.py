@@ -7,6 +7,9 @@ from zoneinfo import ZoneInfo
 
 import feedparser
 
+# ----------------------------
+# ENV
+# ----------------------------
 MAILGUN_DOMAIN = os.environ.get("MAILGUN_DOMAIN")
 EMAIL_TO = os.environ.get("EMAIL_TO")
 EMAIL_FROM_NAME = os.environ.get("EMAIL_FROM_NAME", "The 2k Times")
@@ -16,19 +19,28 @@ SMTP_PASS = os.environ.get("MAILGUN_SMTP_PASS")
 READER_BASE_URL = (os.environ.get("READER_BASE_URL", "https://the-2k-times.onrender.com") or "").rstrip("/")
 
 if not all([MAILGUN_DOMAIN, EMAIL_TO, SMTP_USER, SMTP_PASS]):
-    raise SystemExit("Missing required environment variables")
+    raise SystemExit("Missing required environment variables (MAILGUN_DOMAIN, EMAIL_TO, MAILGUN_SMTP_USER, MAILGUN_SMTP_PASS)")
 
 TZ = ZoneInfo("Europe/London")
 
+# ----------------------------
+# Time window: last 24 hours
+# ----------------------------
 now_uk = datetime.now(TZ)
 window_start = now_uk - timedelta(hours=24)
 subject = f"The 2k Times, {now_uk.strftime('%d.%m.%Y')}"
 
+# ----------------------------
+# Sources (World Headlines)
+# ----------------------------
 WORLD_FEEDS = [
     "https://feeds.bbci.co.uk/news/world/rss.xml",
     "https://feeds.reuters.com/Reuters/worldNews",
 ]
 
+# ----------------------------
+# Helpers
+# ----------------------------
 def reader_link(url: str) -> str:
     url = (url or "").strip()
     if not url:
@@ -42,9 +54,12 @@ def strip_html(text: str) -> str:
 
 def two_sentence_summary(text: str) -> str:
     text = strip_html(text)
+    # split sentences
     sentences = re.split(r"(?<=[.!?])\s+", text)
     sentences = [s.strip() for s in sentences if len(s.strip()) > 20]
-    return " ".join(sentences[:2]) if sentences else "Summary unavailable."
+    if not sentences:
+        return "Summary unavailable."
+    return " ".join(sentences[:2])
 
 def parse_time(entry):
     if hasattr(entry, "published_parsed") and entry.published_parsed:
@@ -74,7 +89,6 @@ def collect_articles(feed_urls, limit):
                 continue
 
             summary_raw = getattr(e, "summary", "") or getattr(e, "description", "") or ""
-
             articles.append({
                 "title": title,
                 "summary": two_sentence_summary(summary_raw),
@@ -83,8 +97,10 @@ def collect_articles(feed_urls, limit):
                 "published": published,
             })
 
+    # newest first
     articles.sort(key=lambda x: x["published"], reverse=True)
 
+    # de-dupe by title
     seen = set()
     unique = []
     for a in articles:
@@ -108,99 +124,225 @@ def esc(s: str) -> str:
         .replace("'", "&#39;")
     )
 
+# ----------------------------
+# Newspaper HTML (mobile-stacked)
+# ----------------------------
 def build_html():
-    rows = []
+    # Palette
+    outer_bg = "#111111"
+    paper = "#f7f5ef"
+    ink = "#111111"
+    muted = "#3e3e3e"
+    rule = "#c9c4b8"
+    link = "#0b57d0"
 
-    rows.append(f"""
-    <tr>
-      <td style="padding:20px;border-bottom:2px solid #111;">
-        <div style="font-size:32px;font-weight:800;">The 2k Times</div>
-        <div style="font-size:13px;color:#aaa;margin-top:6px;">
-          {now_uk.strftime('%d.%m.%Y')} · Daily Edition
-        </div>
-      </td>
-    </tr>
-    """)
+    date_line = now_uk.strftime("%d.%m.%Y")
 
-    rows.append("""
-    <tr>
-      <td style="padding:16px;border-bottom:1px solid #333;">
-        <div style="font-size:14px;font-weight:800;letter-spacing:1px;">
-          WORLD HEADLINES
-        </div>
-      </td>
-    </tr>
-    """)
+    # Each story block
+    def story_row(i, it, lead=False):
+        headline_size = "22px" if lead else "18px"
+        summary_size = "15px" if lead else "14px"
+        top_pad = "16px" if lead else "12px"
 
+        return f"""
+          <tr>
+            <td style="padding:{top_pad} 0 12px 0;">
+              <div style="font-family:Georgia,serif;font-size:{headline_size};font-weight:700;line-height:1.25;color:{ink};">
+                {i}. {esc(it['title'])}
+              </div>
+              <div style="margin-top:8px;font-family:Georgia,serif;font-size:{summary_size};line-height:1.65;color:{muted};">
+                {esc(it['summary'])}
+              </div>
+              <div style="margin-top:10px;font-family:Arial,Helvetica,sans-serif;font-size:13px;">
+                <a href="{esc(it['reader'])}" style="color:{link};text-decoration:none;font-weight:700;">
+                  Read in Reader →
+                </a>
+              </div>
+            </td>
+          </tr>
+          <tr>
+            <td style="padding:0;">
+              <div style="height:1px;background:{rule};"></div>
+            </td>
+          </tr>
+        """
+
+    # Build world items HTML
+    world_html = ""
     if not world_items:
-        rows.append("""
-        <tr>
-          <td style="padding:18px;border-bottom:1px solid #333;color:#ddd;">
-            No qualifying world headlines in the last 24 hours.
-          </td>
-        </tr>
-        """)
+        world_html = f"""
+          <tr>
+            <td style="padding:12px 0 12px 0;font-family:Georgia,serif;color:{muted};font-size:15px;line-height:1.7;">
+              No qualifying world headlines in the last 24 hours.
+            </td>
+          </tr>
+          <tr><td><div style="height:1px;background:{rule};"></div></td></tr>
+        """
     else:
         for i, it in enumerate(world_items, start=1):
-            rows.append(f"""
-            <tr>
-              <td style="padding:18px;border-bottom:1px solid #333;">
-                <div style="font-size:18px;font-weight:700;line-height:1.4;">
-                  {i}) {esc(it['title'])}
-                </div>
+            world_html += story_row(i, it, lead=(i == 1))
 
-                <div style="margin-top:8px;font-size:14px;line-height:1.6;color:#ddd;">
-                  {esc(it['summary'])}
-                </div>
+    # Hybrid responsive CSS:
+    # - On desktop, two columns sit side-by-side
+    # - On mobile, columns become 100% width (stacked)
+    #
+    # Gmail/Spark generally respect style blocks. Outlook ignores media queries,
+    # but will still show columns side-by-side (acceptable).
+    style_block = f"""
+    <style type="text/css">
+      /* Some clients add blue link styling */
+      a {{ text-decoration:none; }}
+      /* Mobile stacking */
+      @media screen and (max-width: 640px) {{
+        .container {{ width: 100% !important; }}
+        .stack {{ display: block !important; width: 100% !important; max-width: 100% !important; }}
+        .stack-pad {{ padding-left: 0 !important; padding-right: 0 !important; }}
+        .divider {{ display: none !important; }}
+      }}
+    </style>
+    """
 
-                <div style="margin-top:12px;font-size:13px;">
-                  <a href="{esc(it['reader'])}" style="color:#6ea8ff;text-decoration:none;">
-                    📄 Read in Reader
-                  </a>
-                </div>
-              </td>
-            </tr>
-            """)
+    # “Inside today” sidebar content
+    inside_today = f"""
+      <div style="font-family:Arial,Helvetica,sans-serif;font-size:13px;font-weight:800;letter-spacing:2px;text-transform:uppercase;color:{ink};">
+        Inside today
+      </div>
+      <div style="height:1px;background:{rule};margin:10px 0 12px 0;"></div>
+      <div style="font-family:Georgia,serif;font-size:15px;line-height:1.75;color:{muted};">
+        • UK Politics (2 stories)<br/>
+        • Rugby Union (top 5)<br/>
+        • Punk Rock (UK gigs + releases)
+      </div>
+      <div style="margin-top:14px;font-family:Arial,Helvetica,sans-serif;font-size:12px;color:{muted};line-height:1.6;">
+        Curated from the last 24 hours.<br/>
+        Reader links are clean + readable, with “Open original”.
+      </div>
+    """
 
-    return f"""
+    # Email HTML
+    html = f"""
     <html>
-    <body style="margin:0;background:#111;color:#fff;font-family:Georgia,serif;">
-      <table width="100%" cellpadding="0" cellspacing="0">
-        <tr>
-          <td align="center">
-            <table width="720" cellpadding="0" cellspacing="0"
-              style="background:#1b1b1b;border-radius:16px;overflow:hidden;">
-              {''.join(rows)}
-            </table>
-          </td>
-        </tr>
-      </table>
-    </body>
+      <head>
+        <meta charset="utf-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        {style_block}
+      </head>
+      <body style="margin:0;padding:0;background:{outer_bg};">
+        <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;background:{outer_bg};">
+          <tr>
+            <td align="center" style="padding:18px;">
+              <table role="presentation" class="container" width="720" cellpadding="0" cellspacing="0"
+                     style="border-collapse:collapse;background:{paper};border-radius:14px;overflow:hidden;">
+                
+                <!-- Masthead -->
+                <tr>
+                  <td style="padding:18px 18px 10px 18px;text-align:center;">
+                    <div style="font-family:Georgia,serif;font-size:42px;font-weight:900;letter-spacing:0.5px;color:{ink};">
+                      The 2k Times
+                    </div>
+                    <div style="margin-top:6px;font-family:Arial,Helvetica,sans-serif;font-size:13px;color:{muted};letter-spacing:1px;text-transform:uppercase;">
+                      {date_line} &nbsp;•&nbsp; Daily Edition
+                    </div>
+                  </td>
+                </tr>
+                <tr>
+                  <td style="padding:0 18px 8px 18px;">
+                    <div style="height:1px;background:{rule};"></div>
+                    <div style="height:3px;background:{ink};margin-top:6px;"></div>
+                  </td>
+                </tr>
+
+                <!-- Section header -->
+                <tr>
+                  <td style="padding:14px 18px 10px 18px;">
+                    <div style="font-family:Arial,Helvetica,sans-serif;font-size:13px;font-weight:800;letter-spacing:2px;text-transform:uppercase;color:{ink};">
+                      World Headlines
+                    </div>
+                  </td>
+                </tr>
+                <tr>
+                  <td style="padding:0 18px;">
+                    <div style="height:1px;background:{rule};"></div>
+                  </td>
+                </tr>
+
+                <!-- Two columns (hybrid) -->
+                <tr>
+                  <td style="padding:14px 18px 18px 18px;">
+                    <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;">
+                      <tr>
+
+                        <!-- LEFT COLUMN -->
+                        <td class="stack" valign="top" width="50%" style="padding-right:10px;">
+                          <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;">
+                            {world_html}
+                          </table>
+                        </td>
+
+                        <!-- DIVIDER -->
+                        <td class="divider" width="1" valign="top" style="background:{rule};font-size:0;line-height:0;">&nbsp;</td>
+
+                        <!-- RIGHT COLUMN -->
+                        <td class="stack stack-pad" valign="top" width="50%" style="padding-left:10px;">
+                          <div style="padding:2px 0 0 0;">
+                            {inside_today}
+                          </div>
+                        </td>
+
+                      </tr>
+                    </table>
+                  </td>
+                </tr>
+
+                <!-- Footer -->
+                <tr>
+                  <td style="padding:14px 18px 18px 18px;text-align:center;font-family:Arial,Helvetica,sans-serif;font-size:11px;color:{muted};">
+                    © The 2k Times · Delivered daily at 05:30 · Reader links include “Open original”.
+                  </td>
+                </tr>
+
+              </table>
+            </td>
+          </tr>
+        </table>
+      </body>
     </html>
     """
+    return html
 
 html_body = build_html()
 
-# Plain-text fallback: also remove "Article" link; keep reader link only
-plain_lines = [f"THE 2K TIMES — {now_uk.strftime('%d.%m.%Y')}\n", "WORLD HEADLINES\n"]
+# ----------------------------
+# Plain text fallback
+# ----------------------------
+plain_lines = [
+    f"THE 2K TIMES — {now_uk.strftime('%d.%m.%Y')}",
+    "",
+    "WORLD HEADLINES",
+    ""
+]
 if not world_items:
-    plain_lines.append("No qualifying world headlines in the last 24 hours.\n")
+    plain_lines.append("No qualifying world headlines in the last 24 hours.")
 else:
     for i, it in enumerate(world_items, start=1):
-        plain_lines.append(f"{i}) {it['title']}")
+        plain_lines.append(f"{i}. {it['title']}")
         plain_lines.append(it["summary"])
-        plain_lines.append(f"Read: {it['reader']}\n")
+        plain_lines.append(f"Read: {it['reader']}")
+        plain_lines.append("")
 
-plain_body = "\n".join(plain_lines)
+plain_body = "\n".join(plain_lines).strip() + "\n"
 
+# ----------------------------
+# Send email (plain first, html alternative)
+# ----------------------------
 msg = EmailMessage()
 msg["Subject"] = subject
 msg["From"] = f"{EMAIL_FROM_NAME} <postmaster@{MAILGUN_DOMAIN}>"
 msg["To"] = EMAIL_TO
 
-# HTML first so Spark renders it
-msg.set_content(html_body, subtype="html")
-msg.add_alternative(plain_body, subtype="plain")
+# Correct multipart/alternative order
+msg.set_content(plain_body)
+msg.add_alternative(html_body, subtype="html")
 
 with smtplib.SMTP("smtp.mailgun.org", 587) as server:
     server.starttls()
