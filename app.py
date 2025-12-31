@@ -42,20 +42,72 @@ def html_escape(s: str) -> str:
     )
 
 
+def sentence_split(text: str):
+    """
+    Simple sentence splitter that behaves reasonably for news copy.
+    """
+    text = re.sub(r"\s+", " ", (text or "").strip())
+    if not text:
+        return []
+    # Split on punctuation + space, but avoid splitting initials too aggressively
+    parts = re.split(r"(?<=[.!?])\s+(?=[A-Z0-9“\"'])", text)
+    return [p.strip() for p in parts if p.strip()]
+
+
+def split_long_paragraphs(soup: BeautifulSoup, max_chars: int = 420, min_chunk_chars: int = 140):
+    """
+    If a <p> is huge, split it into multiple paragraphs at sentence boundaries.
+    """
+    for p in list(soup.find_all("p")):
+        txt = p.get_text(" ", strip=True)
+
+        # Skip short paragraphs or ones with lots of links
+        if len(txt) <= max_chars:
+            continue
+        if len(p.find_all("a")) >= 3:
+            continue
+
+        sentences = sentence_split(txt)
+        if len(sentences) < 4:
+            continue
+
+        chunks = []
+        current = ""
+        for s in sentences:
+            if not current:
+                current = s
+            elif len(current) + 1 + len(s) <= max_chars:
+                current += " " + s
+            else:
+                chunks.append(current)
+                current = s
+        if current:
+            chunks.append(current)
+
+        # Avoid creating silly tiny paragraphs
+        merged = []
+        for c in chunks:
+            if merged and len(c) < min_chunk_chars:
+                merged[-1] = merged[-1] + " " + c
+            else:
+                merged.append(c)
+
+        # Replace original <p> with multiple <p>
+        new_ps = [soup.new_tag("p") for _ in merged]
+        for tag, c in zip(new_ps, merged):
+            tag.string = c
+
+        for new_p in reversed(new_ps):
+            p.insert_after(new_p)
+        p.decompose()
+
+
 def clean_extracted_html(article_html: str) -> str:
-    """
-    Clean up extracted HTML to keep it readable and safe.
-    """
     soup = BeautifulSoup(article_html, "html.parser")
 
     # Remove scripts/styles
     for tag in soup(["script", "style", "noscript"]):
         tag.decompose()
-
-    # Kill empty tags
-    for tag in soup.find_all():
-        if tag.name in ["div", "span"] and not tag.get_text(strip=True):
-            tag.decompose()
 
     # Keep basic formatting only
     allowed = {"p", "h1", "h2", "h3", "blockquote", "ul", "ol", "li", "strong", "em", "a"}
@@ -63,7 +115,6 @@ def clean_extracted_html(article_html: str) -> str:
         if tag.name not in allowed:
             tag.unwrap()
         else:
-            # strip noisy attributes
             tag.attrs = {k: v for k, v in tag.attrs.items() if k in ["href"]}
 
     # Ensure links open safely
@@ -71,18 +122,15 @@ def clean_extracted_html(article_html: str) -> str:
         a.attrs["rel"] = "noopener noreferrer"
         a.attrs["target"] = "_blank"
 
-    html = str(soup)
+    # ✅ NEW: better paragraph splitting
+    split_long_paragraphs(soup)
 
-    # Collapse repeated whitespace
+    html = str(soup)
     html = re.sub(r"\n{3,}", "\n\n", html).strip()
     return html
 
 
 def extract_readable(url: str):
-    """
-    Fetch the page and extract main content via Readability.
-    Returns (title, html_body).
-    """
     r = requests.get(
         url,
         timeout=TIMEOUT,
@@ -97,26 +145,27 @@ def extract_readable(url: str):
     doc = Document(r.text)
     title = doc.short_title() or "Article"
     content_html = doc.summary(html_partial=True)
-
-    # Clean extracted HTML
     content_html = clean_extracted_html(content_html)
 
-    # Fallback if content is too empty
+    # Fallback if too empty
     if len(BeautifulSoup(content_html, "html.parser").get_text(" ", strip=True)) < 400:
         soup = BeautifulSoup(r.text, "html.parser")
-        # remove obvious junk
         for tag in soup(["script", "style", "noscript", "header", "footer", "nav"]):
             tag.decompose()
         text = soup.get_text("\n", strip=True)
         text = re.sub(r"\n{3,}", "\n\n", text)
-        # Convert to simple paragraphs
+
         paras = []
         for p in text.split("\n\n"):
             p = p.strip()
-            if len(p) < 40:
+            if len(p) < 60:
                 continue
             paras.append(f"<p>{html_escape(p)}</p>")
-        content_html = "\n".join(paras[:60])  # cap so it doesn't go insane
+
+        # run splitting on fallback too
+        fallback_soup = BeautifulSoup("\n".join(paras[:80]), "html.parser")
+        split_long_paragraphs(fallback_soup)
+        content_html = str(fallback_soup)
 
     return title[:160], content_html
 
