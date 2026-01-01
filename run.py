@@ -14,7 +14,7 @@ import feedparser
 # ----------------------------
 # DEBUG / VERSION
 # ----------------------------
-TEMPLATE_VERSION = "v-newspaper-16"
+TEMPLATE_VERSION = "v-newspaper-17"
 DEBUG_SUBJECT = True  # set False when you're happy
 
 # ----------------------------
@@ -61,7 +61,7 @@ WORLD_FEEDS = [
 UK_POLITICS_FEEDS = [
     "https://feeds.bbci.co.uk/news/politics/rss.xml",
     "https://www.theguardian.com/politics/rss",
-    "https://www.reuters.com/rssFeed/politicsNews",  # may fail sometimes; kept as an optional source
+    "https://www.reuters.com/rssFeed/politicsNews",  # optional, may fail sometimes
 ]
 
 RUGBY_FEEDS = [
@@ -73,7 +73,7 @@ RUGBY_FEEDS = [
 
 PUNK_ROCK_FEEDS = [
     "https://www.punknews.org/rss",
-    "https://www.kerrang.com/feed",  # may not always be available; optional
+    "https://www.kerrang.com/feed",  # optional
 ]
 
 # ----------------------------
@@ -202,15 +202,7 @@ punk_items = collect_articles(PUNK_ROCK_FEEDS, limit=5)
 # CARDIFF WEATHER + SUN (Open-Meteo)
 # ----------------------------
 def get_cardiff_weather_and_sun():
-    """
-    Uses Open-Meteo without an API key.
-    Returns dict with:
-      temp_c, feels_c, hi_c, lo_c, sunrise, sunset
-    """
-    # Cardiff approx
     lat, lon = 51.4816, -3.1791
-
-    # We request current temp + apparent, and today's hi/lo + sunrise/sunset.
     url = (
         "https://api.open-meteo.com/v1/forecast?"
         f"latitude={lat}&longitude={lon}"
@@ -237,7 +229,6 @@ def get_cardiff_weather_and_sun():
         def hhmm(dt_str: str | None):
             if not dt_str:
                 return "--:--"
-            # dt_str like "2026-01-01T08:18"
             m = re.search(r"T(\d{2}:\d{2})", dt_str)
             return m.group(1) if m else "--:--"
 
@@ -257,101 +248,106 @@ def get_cardiff_weather_and_sun():
 wx = get_cardiff_weather_and_sun()
 
 # ----------------------------
+# WX DISPLAY STRINGS (FIXES wx_line NameError)
+# ----------------------------
+def _fmt_c(v):
+    if v is None:
+        return "--"
+    try:
+        return f"{float(v):.1f}".rstrip("0").rstrip(".")
+    except Exception:
+        return "--"
+
+if wx.get("ok"):
+    wx_line = f"{_fmt_c(wx.get('temp_c'))}°C (feels {_fmt_c(wx.get('feels_c'))}°C) · H {_fmt_c(wx.get('hi_c'))}°C / L {_fmt_c(wx.get('lo_c'))}°C"
+    sunrise_plain = f"Sunrise: {wx.get('sunrise')} · Sunset: {wx.get('sunset')}"
+else:
+    wx_line = "Weather unavailable."
+    sunrise_plain = "Sunrise: --:-- · Sunset: --:--"
+
+# ----------------------------
 # WHO'S IN SPACE (whoisinspace.com)
 # ----------------------------
 def get_people_in_space():
-    """
-    Prefer whoisinspace.com (HTML parse).
-    Returns list of dicts: {name, craft}
-    """
     url = "https://whoisinspace.com/"
     people = []
 
     try:
         html = fetch_url(url, timeout=12).decode("utf-8", errors="replace")
 
-        # The site commonly contains headings for craft/station and lists of people.
-        # We'll parse in a robust way:
-        # - find craft blocks (ISS, Tiangong, etc.)
-        # - within each block, find person names (often in <h3> or links)
-        #
-        # Strategy:
-        # Split by craft headings (look for ISS / Tiangong / etc in text).
-        # Then extract likely names from that section.
-        text = re.sub(r"\s+", " ", html)
+        # Try to extract JSON-LD people if present (more reliable than HTML text)
+        # (If not present, we fallback to heuristic parsing)
+        jsonld = re.findall(r'<script[^>]+type="application/ld\+json"[^>]*>(.*?)</script>', html, flags=re.I | re.S)
+        for blob in jsonld:
+            try:
+                data = json.loads(blob.strip())
+                # Some sites wrap in list
+                if isinstance(data, list):
+                    for item in data:
+                        if isinstance(item, dict):
+                            data = item
+                            break
 
-        # Find craft markers (very forgiving)
-        craft_markers = []
-        for craft in ["ISS", "Tiangong", "Shenzhou", "Space Station", "Crew", "Axiom"]:
-            for m in re.finditer(rf">{craft}[^<]*<", html, flags=re.IGNORECASE):
-                craft_markers.append((m.start(), craft))
-        craft_markers.sort(key=lambda x: x[0])
+                # Look for a "Person" list
+                # (This is best-effort; if structure differs, we fallback below.)
+                if isinstance(data, dict):
+                    graph = data.get("@graph")
+                    if isinstance(graph, list):
+                        for node in graph:
+                            if isinstance(node, dict) and node.get("@type") == "Person":
+                                name = node.get("name")
+                                if name:
+                                    people.append({"name": name.strip(), "craft": "In space"})
+            except Exception:
+                pass
 
-        # If we can't find craft markers, fallback to a simple name list
-        if not craft_markers:
-            # Find visible-name patterns (this is a last resort)
-            candidates = re.findall(r'aria-label="([^"]+)"', html)
-            for c in candidates:
-                c = c.strip()
-                if 3 <= len(c) <= 60 and "who is in space" not in c.lower():
-                    people.append({"name": c, "craft": "In space"})
-            # de-dupe
-            seen = set()
-            out = []
-            for p in people:
-                k = (p["name"].lower(), p["craft"].lower())
-                if k in seen:
-                    continue
-                seen.add(k)
-                out.append(p)
-            return out
+        # If JSON-LD didn’t yield enough, do heuristic HTML parsing
+        if len(people) < 3:
+            # Find craft headings and name-like strings after them.
+            craft_markers = []
+            for craft in ["ISS", "Tiangong"]:
+                for m in re.finditer(rf">{craft}[^<]*<", html, flags=re.IGNORECASE):
+                    craft_markers.append((m.start(), craft))
+            craft_markers.sort(key=lambda x: x[0])
 
-        # Build segments between markers
-        for idx, (pos, craft_guess) in enumerate(craft_markers):
-            end = craft_markers[idx + 1][0] if idx + 1 < len(craft_markers) else len(html)
-            segment = html[pos:end]
+            if craft_markers:
+                for idx, (pos, craft_guess) in enumerate(craft_markers):
+                    end = craft_markers[idx + 1][0] if idx + 1 < len(craft_markers) else len(html)
+                    segment = html[pos:end]
 
-            # Normalize craft label from nearest heading text around the marker
-            craft_label = craft_guess
-            # Try to grab a bit of heading text
-            head = re.search(r">(ISS[^<]{0,60}|Tiangong[^<]{0,60}|Shenzhou[^<]{0,60})<", segment, flags=re.IGNORECASE)
-            if head:
-                craft_label = strip_html(head.group(1)).strip()
+                    craft_label = "ISS" if craft_guess.lower() == "iss" else "Tiangong"
 
-            # Find likely person names (often in <h3> / <h2> / strong tags / links)
-            # We'll accept Title Case name-like strings.
-            name_candidates = re.findall(r">(?!ISS|Tiangong|Shenzhou)([A-Z][a-z]+(?:\s+[A-Z][a-z'\-]+){1,3})<", segment)
+                    name_candidates = re.findall(
+                        r">(?!ISS|Tiangong)([A-Z][a-z]+(?:\s+[A-Z][a-z'\-]+){1,3})<",
+                        segment
+                    )
+                    for nm in name_candidates:
+                        nm = nm.strip()
+                        if any(bad in nm.lower() for bad in ["daily", "edition", "read in", "space", "station", "crew"]):
+                            continue
+                        people.append({"name": nm, "craft": craft_label})
 
-            for nm in name_candidates:
-                nm = nm.strip()
-                # Filter obvious non-names
-                if any(bad in nm.lower() for bad in ["daily", "edition", "read in", "space", "station", "crew"]):
-                    continue
-                people.append({"name": nm, "craft": craft_label})
-
-        # Clean + de-dupe; also keep order
+        # De-dupe, keep order
         seen = set()
         out = []
         for p in people:
-            name = p["name"].strip()
-            craft = p["craft"].strip()
-
+            name = (p.get("name") or "").strip()
+            craft = (p.get("craft") or "").strip() or "In space"
             if not name:
                 continue
 
             # normalize craft display
-            if craft.lower().startswith("iss"):
-                craft_disp = "ISS"
-            elif "tiangong" in craft.lower():
-                craft_disp = "Tiangong"
-            else:
-                craft_disp = craft
+            c = craft
+            if c.lower().startswith("iss"):
+                c = "ISS"
+            elif "tiangong" in c.lower():
+                c = "Tiangong"
 
-            key = (name.lower(), craft_disp.lower())
+            key = (name.lower(), c.lower())
             if key in seen:
                 continue
             seen.add(key)
-            out.append({"name": name, "craft": craft_disp})
+            out.append({"name": name, "craft": c})
 
         return out
 
@@ -366,7 +362,7 @@ space_people = get_people_in_space()
 # ----------------------------
 def build_html():
     outer_bg = "#111111"
-    paper = "#1b1b1b"  # dark paper
+    paper = "#1b1b1b"
     ink = "#f2f2f2"
     muted = "#c7c7c7"
     rule_light = "#2e2e2e"
@@ -375,7 +371,6 @@ def build_html():
     font = '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif'
     date_line = now_uk.strftime("%d.%m.%Y")
 
-    # Prevent client “font boosting”
     size_fix_inline = "-webkit-text-size-adjust:100%;text-size-adjust:100%;-ms-text-size-adjust:100%;"
 
     style_block = """
@@ -390,9 +385,8 @@ def build_html():
     </style>
     """
 
-    # --- block renderer shared across sections (matches World Headlines style) ---
     def story_block(i, it, lead=False, show_kicker=False):
-        headline_size = "18px"  # keep top story same size as others (per your request earlier)
+        headline_size = "18px"  # top story same size as others
         headline_weight = "800" if lead else "700"
         summary_size = "13.5px"
         summary_weight = "400"
@@ -497,7 +491,7 @@ def build_html():
         </tr>
         """
 
-    # Build World HTML
+    # World HTML
     if world_items:
         world_html = ""
         for i, it in enumerate(world_items, start=1):
@@ -513,36 +507,20 @@ def build_html():
         </table>
         """
 
-    # Inside Today counts
     inside_counts = [
         f"UK Politics ({len(uk_politics_items)} stories)",
         f"Rugby Union ({len(rugby_items)} stories)",
         f"Punk Rock ({len(punk_items)} stories)",
     ]
 
-    # Weather line
-    if wx.get("ok"):
-        def fmt_c(v):
-            if v is None:
-                return "--"
-            try:
-                return f"{float(v):.1f}".rstrip("0").rstrip(".")
-            except Exception:
-                return "--"
+    # HTML sunrise line (with emphasis)
+    sunrise_html = f"Sunrise: <span style='font-weight:800;color:{ink};'>{esc(wx.get('sunrise') if wx.get('ok') else '--:--')}</span> &nbsp;·&nbsp; Sunset: <span style='font-weight:800;color:{ink};'>{esc(wx.get('sunset') if wx.get('ok') else '--:--')}</span>"
 
-        wx_line = f"{fmt_c(wx.get('temp_c'))}°C (feels {fmt_c(wx.get('feels_c'))}°C) · H {fmt_c(wx.get('hi_c'))}°C / L {fmt_c(wx.get('lo_c'))}°C"
-        sunrise_line = f"Sunrise: <span style='font-weight:800;color:{ink};'>{esc(wx.get('sunrise'))}</span> &nbsp;·&nbsp; Sunset: <span style='font-weight:800;color:{ink};'>{esc(wx.get('sunset'))}</span>"
-    else:
-        wx_line = "Weather unavailable."
-        sunrise_line = "Sunrise: --:-- · Sunset: --:--"
-
-    # Who's in space list (ALL)
     if space_people:
         space_lines = "<br/>".join([f"{esc(p['name'])} ({esc(p['craft'])})" for p in space_people])
     else:
         space_lines = "Space list unavailable."
 
-    # Bottom sections stacked, formatted like World
     def build_section_items(items, label, emoji):
         if items:
             blocks = ""
@@ -619,14 +597,14 @@ def build_html():
                 </td>
               </tr>
 
-              <!-- Single thin rule (same weight everywhere) -->
+              <!-- Single thin rule -->
               <tr>
                 <td style="padding:0 20px 6px 20px;">
                   <div style="height:1px;background:{rule_light};"></div>
                 </td>
               </tr>
 
-              <!-- WORLD + INSIDE (two columns) -->
+              <!-- WORLD + INSIDE -->
               {section_header("World Headlines", "🌍")}
 
               <tr>
@@ -634,18 +612,14 @@ def build_html():
                   <table width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;">
                     <tr>
 
-                      <!-- Left column -->
                       <td class="stack colpadR" width="56%" valign="top" style="padding-right:12px;">
                         {world_html}
                       </td>
 
-                      <!-- Divider -->
                       <td class="divider" width="1" style="background:{rule_light};"></td>
 
-                      <!-- Right column -->
                       <td class="stack colpadL" width="44%" valign="top" style="padding-left:12px;">
 
-                        <!-- Align INSIDE TODAY with TOP STORY by adding same top spacer -->
                         <table width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;">
                           <tr><td style="height:18px;font-size:0;line-height:0;">&nbsp;</td></tr>
 
@@ -696,7 +670,6 @@ def build_html():
                           <tr><td style="height:1px;background:{rule_light};font-size:0;line-height:0;">&nbsp;</td></tr>
                           <tr><td style="height:16px;font-size:0;line-height:0;">&nbsp;</td></tr>
 
-                          <!-- Weather -->
                           <tr>
                             <td style="font-family:{font};
                                        font-size:12px !important;
@@ -722,7 +695,6 @@ def build_html():
 
                           <tr><td style="height:18px;font-size:0;line-height:0;">&nbsp;</td></tr>
 
-                          <!-- Sunrise/Sunset -->
                           <tr>
                             <td style="font-family:{font};
                                        font-size:12px !important;
@@ -742,13 +714,12 @@ def build_html():
                                        color:{muted};
                                        line-height:1.6;
                                        {size_fix_inline}">
-                              {sunrise_line}
+                              {sunrise_html}
                             </td>
                           </tr>
 
                           <tr><td style="height:18px;font-size:0;line-height:0;">&nbsp;</td></tr>
 
-                          <!-- Who's in space -->
                           <tr>
                             <td style="font-family:{font};
                                        font-size:12px !important;
@@ -825,18 +796,15 @@ else:
         plain_lines.append("")
 
 plain_lines += ["", "INSIDE TODAY", ""]
-plain_lines += [f"- UK Politics: {len(uk_politics_items)}", f"- Rugby Union: {len(rugby_items)}", f"- Punk Rock: {len(punk_items)}", ""]
+plain_lines += [
+    f"- UK Politics: {len(uk_politics_items)}",
+    f"- Rugby Union: {len(rugby_items)}",
+    f"- Punk Rock: {len(punk_items)}",
+    "",
+]
 
-# Weather/sun for text
-plain_lines += ["WEATHER — CARDIFF"]
-if wx.get("ok"):
-    plain_lines.append(wx_line)
-    plain_lines.append(f"Sunrise: {wx.get('sunrise')}  Sunset: {wx.get('sunset')}")
-else:
-    plain_lines.append("Weather unavailable.")
-plain_lines.append("")
+plain_lines += ["WEATHER — CARDIFF", wx_line, sunrise_plain, ""]
 
-# Space list for text
 plain_lines += ["WHO'S IN SPACE"]
 if space_people:
     for p in space_people:
@@ -845,7 +813,6 @@ else:
     plain_lines.append("Space list unavailable.")
 plain_lines.append("")
 
-# Bottom sections
 def add_plain_section(title, items):
     plain_lines.append(title.upper())
     if not items:
