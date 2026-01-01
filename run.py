@@ -14,7 +14,7 @@ import feedparser
 # ----------------------------
 # DEBUG / VERSION
 # ----------------------------
-TEMPLATE_VERSION = "v-newspaper-16"
+TEMPLATE_VERSION = "v-newspaper-17"
 DEBUG_SUBJECT = True  # set False when you're happy
 
 # ----------------------------
@@ -49,7 +49,7 @@ subject = (
 
 # ----------------------------
 # FEEDS (defaults)
-# You can override any list with env CSV:
+# Override via env CSV:
 #   UK_POLITICS_FEEDS="url1,url2"
 #   RUGBY_UNION_FEEDS="url1,url2"
 #   PUNK_ROCK_FEEDS="url1,url2"
@@ -59,31 +59,30 @@ WORLD_FEEDS = [
     "https://feeds.reuters.com/Reuters/worldNews",
 ]
 
-# UK Politics: BBC + Guardian + Reuters UK
 UK_POLITICS_FEEDS = [
     "https://feeds.bbci.co.uk/news/politics/rss.xml",
     "https://www.theguardian.com/politics/rss",
     "https://feeds.reuters.com/reuters/UKdomesticNews",
 ]
 
-# Rugby Union: BBC + RugbyPass + PlanetRugby (RSS endpoints can change; env override supported)
 RUGBY_UNION_FEEDS = [
     "https://feeds.bbci.co.uk/sport/rugby-union/rss.xml",
     "https://www.rugbypass.com/feed/",
     "https://www.planetrugby.com/feed",
 ]
 
-# Punk Rock: Punknews + (fallback) Louder/Kerrang category feeds vary; env override supported
 PUNK_ROCK_FEEDS = [
     "https://www.punknews.org/backend.xml",
     "https://www.loudersound.com/feeds/tag/punk",
 ]
+
 
 def env_csv(name: str):
     v = (os.environ.get(name) or "").strip()
     if not v:
         return None
     return [x.strip() for x in v.split(",") if x.strip()]
+
 
 UK_POLITICS_FEEDS = env_csv("UK_POLITICS_FEEDS") or UK_POLITICS_FEEDS
 RUGBY_UNION_FEEDS = env_csv("RUGBY_UNION_FEEDS") or RUGBY_UNION_FEEDS
@@ -98,10 +97,12 @@ def reader_link(url: str) -> str:
         return ""
     return f"{READER_BASE_URL}/read?url={quote(url, safe='')}"
 
+
 def strip_html(text: str) -> str:
     text = re.sub(r"<[^>]+>", " ", text or "")
     text = re.sub(r"\s+", " ", text)
     return text.strip()
+
 
 def two_sentence_summary(text: str) -> str:
     text = strip_html(text)
@@ -111,6 +112,7 @@ def two_sentence_summary(text: str) -> str:
         return "Summary unavailable."
     return " ".join(sentences[:2])
 
+
 def parse_time(entry):
     if getattr(entry, "published_parsed", None):
         return datetime(*entry.published_parsed[:6], tzinfo=ZoneInfo("UTC")).astimezone(TZ)
@@ -118,9 +120,11 @@ def parse_time(entry):
         return datetime(*entry.updated_parsed[:6], tzinfo=ZoneInfo("UTC")).astimezone(TZ)
     return None
 
+
 def looks_like_low_value(title: str) -> bool:
     t = (title or "").lower()
     return any(w in t for w in ["live", "minute-by-minute", "as it happened"])
+
 
 def collect_articles(feed_urls, limit):
     articles = []
@@ -152,7 +156,6 @@ def collect_articles(feed_urls, limit):
 
     articles.sort(key=lambda x: x["published"], reverse=True)
 
-    # de-dupe by normalized title
     seen = set()
     unique = []
     for a in articles:
@@ -163,6 +166,7 @@ def collect_articles(feed_urls, limit):
         unique.append(a)
 
     return unique[:limit]
+
 
 def collect_count(feed_urls):
     count = 0
@@ -186,6 +190,7 @@ def collect_count(feed_urls):
             count += 1
     return count
 
+
 def esc(s: str) -> str:
     return (
         (s or "")
@@ -195,6 +200,7 @@ def esc(s: str) -> str:
         .replace('"', "&quot;")
         .replace("'", "&#39;")
     )
+
 
 def fetch_url(url: str, timeout: int = 14) -> str:
     req = Request(
@@ -206,6 +212,7 @@ def fetch_url(url: str, timeout: int = 14) -> str:
     )
     with urlopen(req, timeout=timeout) as r:
         return r.read().decode("utf-8", errors="replace")
+
 
 # ----------------------------
 # WEATHER + SUNRISE/SUNSET (Cardiff) via Open-Meteo (no key)
@@ -252,6 +259,7 @@ def fetch_cardiff_weather():
     except Exception:
         return {"ok": False}
 
+
 def fmt_temp(x):
     if x is None:
         return "--"
@@ -261,6 +269,7 @@ def fmt_temp(x):
         return f"{float(x):.1f}"
     except Exception:
         return "--"
+
 
 # ----------------------------
 # WHO IS IN SPACE (whoisinspace.com)
@@ -290,6 +299,7 @@ class _H2Extractor(HTMLParser):
         if self.in_h2 and data:
             self._buf.append(data)
 
+
 def fetch_who_in_space():
     try:
         html = fetch_url("https://whoisinspace.com/")
@@ -313,7 +323,6 @@ def fetch_who_in_space():
             if not clean:
                 continue
 
-            # group header
             if " - " in clean and any(k in clean.lower() for k in ["iss", "tiangong", "space", "soyuz", "crew", "shenzhou"]):
                 current_station = normalize_station(clean)
                 continue
@@ -325,7 +334,6 @@ def fetch_who_in_space():
                     continue
                 people.append({"name": clean, "station": current_station})
 
-        # de-dupe
         seen = set()
         uniq = []
         for p in people:
@@ -338,6 +346,7 @@ def fetch_who_in_space():
         return uniq, None
     except Exception as e:
         return [], f"{type(e).__name__}: {e}"
+
 
 # ----------------------------
 # COLLECT CONTENT
@@ -396,12 +405,15 @@ def build_html():
           </span>
         """
 
+    # ✅ Single renderer used everywhere (World + stacked sections)
     def story_block(i, it, lead=False):
         headline_size = "18px"
         headline_weight = "800"
         summary_size = "13.5px"
         summary_weight = "400"
         pad_top = "14px" if lead else "16px"
+
+        # for world top story only
         left_bar = "border-left:4px solid #0f0f0f;padding-left:12px;" if lead else ""
 
         kicker_row = ""
@@ -418,6 +430,7 @@ def build_html():
         return f"""
         <table width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;">
           <tr><td style="height:{pad_top};font-size:0;line-height:0;">&nbsp;</td></tr>
+
           <tr>
             <td style="{left_bar}{size_fix_inline}">
               <table width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;">
@@ -468,6 +481,7 @@ def build_html():
                     </a>
                   </td>
                 </tr>
+
               </table>
             </td>
           </tr>
@@ -477,57 +491,26 @@ def build_html():
         </table>
         """
 
-    def mini_story(it):
-        return f"""
-        <tr>
-          <td style="padding:10px 0 12px 0;{size_fix_inline}">
-            <div style="font-family:{font};font-size:15px;font-weight:800;line-height:1.25;color:{ink};">
-              {esc(it['title'])}
-            </div>
-            <div style="height:8px;"></div>
-            <div style="font-family:{font};font-size:13px;font-weight:400;line-height:1.65;color:{muted};">
-              {esc(it['summary'])}
-            </div>
-            <div style="height:10px;"></div>
-            <div style="font-family:{font};font-size:12px;font-weight:900;letter-spacing:1px;text-transform:uppercase;">
-              <a href="{esc(it['reader'])}" style="color:{link};text-decoration:none;">Read in Reader →</a>
-            </div>
-          </td>
-        </tr>
-        <tr><td style="height:1px;background:{rule};font-size:0;line-height:0;">&nbsp;</td></tr>
-        """
-
-    def stacked_section(title, emoji, items, empty_text="No stories in the last 24 hours."):
-        if items:
-            rows = "".join(mini_story(it) for it in items)
-        else:
-            rows = f"""
-            <tr>
-              <td style="padding:10px 0 12px 0;font-family:{font};font-size:13px;line-height:1.6;color:{muted};{size_fix_inline}">
-                {esc(empty_text)}
-              </td>
-            </tr>
-            <tr><td style="height:1px;background:{rule};font-size:0;line-height:0;">&nbsp;</td></tr>
+    # helper to render a full section using the SAME story renderer
+    def render_section(items, lead_first=False):
+        if not items:
+            return f"""
+            <table width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;">
+              <tr>
+                <td style="padding:12px 0 12px 0;font-family:{font};font-size:13px;line-height:1.6;color:{muted};{size_fix_inline}">
+                  No stories in the last 24 hours.
+                </td>
+              </tr>
+              <tr><td style="height:1px;background:{rule};font-size:0;line-height:0;">&nbsp;</td></tr>
+            </table>
             """
-        return f"""
-        <table width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;">
-          <tr>
-            <td style="padding:0 0 10px 0;">
-              {section_heading(title, emoji)}
-            </td>
-          </tr>
-          <tr><td style="height:1px;background:{rule};font-size:0;line-height:0;">&nbsp;</td></tr>
-          {rows}
-        </table>
-        """
+        out = ""
+        for idx, it in enumerate(items, start=1):
+            out += story_block(idx, it, lead=(lead_first and idx == 1))
+        return out
 
-    # World stories
-    if world_items:
-        world_html = ""
-        for i, it in enumerate(world_items, start=1):
-            world_html += story_block(i, it, lead=(i == 1))
-    else:
-        world_html = f"""
+    # WORLD
+    world_html = render_section(world_items, lead_first=True) if world_items else f"""
         <table width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;">
           <tr>
             <td style="padding:18px 0;font-family:{font};color:{muted};font-size:14px;line-height:1.7;{size_fix_inline}">
@@ -535,9 +518,9 @@ def build_html():
             </td>
           </tr>
         </table>
-        """
+    """
 
-    # Weather / sunrise
+    # WEATHER / SUN
     if wx.get("ok"):
         weather_line = f"{fmt_temp(wx.get('current_c'))}°C (feels {fmt_temp(wx.get('feels_c'))}°C) · H {fmt_temp(wx.get('hi_c'))}°C / L {fmt_temp(wx.get('lo_c'))}°C"
         sunrise = wx.get("sunrise", "--:--")
@@ -547,7 +530,7 @@ def build_html():
         sunrise = "--:--"
         sunset = "--:--"
 
-    # Space list (ALL)
+    # SPACE (ALL)
     if who_err:
         space_html = f"<span style='color:{muted};'>Unavailable ({esc(who_err)})</span>"
     elif not people_in_space:
@@ -558,10 +541,10 @@ def build_html():
             rows.append(f"{esc(p['name'])} <span style='color:{muted};'>({esc(p['station'])})</span>")
         space_html = "<br/>".join(rows)
 
-    # Stacked sections (full width)
-    uk_section_html = stacked_section("UK Politics", "🏛️", uk_politics_items)
-    rugby_section_html = stacked_section("Rugby Union", "🏉", rugby_union_items)
-    punk_section_html = stacked_section("Punk Rock", "🎸", punk_rock_items)
+    # ✅ Bottom sections now rendered with the SAME story format
+    uk_html = render_section(uk_politics_items, lead_first=False)
+    rugby_html = render_section(rugby_union_items, lead_first=False)
+    punk_html = render_section(punk_rock_items, lead_first=False)
 
     return f"""
     <html>
@@ -752,26 +735,32 @@ def build_html():
                 </td>
               </tr>
 
-              <!-- STACKED: UK Politics -->
+              <!-- UK Politics -->
               <tr>
-                <td style="padding:0 20px 22px 20px;">
-                  {uk_section_html}
+                <td style="padding:0 20px 10px 20px;">
+                  {section_heading("UK Politics", "🏛️")}
                 </td>
               </tr>
+              <tr><td style="padding:0 20px;"><div style="height:1px;background:{rule};"></div></td></tr>
+              <tr><td style="padding:0 20px 22px 20px;">{uk_html}</td></tr>
 
-              <!-- STACKED: Rugby Union -->
+              <!-- Rugby -->
               <tr>
-                <td style="padding:0 20px 22px 20px;">
-                  {rugby_section_html}
+                <td style="padding:0 20px 10px 20px;">
+                  {section_heading("Rugby Union", "🏉")}
                 </td>
               </tr>
+              <tr><td style="padding:0 20px;"><div style="height:1px;background:{rule};"></div></td></tr>
+              <tr><td style="padding:0 20px 22px 20px;">{rugby_html}</td></tr>
 
-              <!-- STACKED: Punk Rock -->
+              <!-- Punk -->
               <tr>
-                <td style="padding:0 20px 22px 20px;">
-                  {punk_section_html}
+                <td style="padding:0 20px 10px 20px;">
+                  {section_heading("Punk Rock", "🎸")}
                 </td>
               </tr>
+              <tr><td style="padding:0 20px;"><div style="height:1px;background:{rule};"></div></td></tr>
+              <tr><td style="padding:0 20px 22px 20px;">{punk_html}</td></tr>
 
               <!-- Footer -->
               <tr>
@@ -788,6 +777,7 @@ def build_html():
     </body>
     </html>
     """
+
 
 # ----------------------------
 # Plain text fallback
@@ -818,26 +808,21 @@ plain_lines += [
     f"- Punk Rock ({punk_rock_count})",
 ]
 
-plain_lines += ["", "UK POLITICS"]
-if uk_politics_items:
-    for it in uk_politics_items:
-        plain_lines += [f"- {it['title']}", it["summary"], f"Read in Reader: {it['reader']}", ""]
-else:
-    plain_lines.append("No stories in the last 24 hours.")
+def add_plain_section(label, items):
+    plain_lines.append("")
+    plain_lines.append(label.upper())
+    if items:
+        for it in items:
+            plain_lines.append(it["title"])
+            plain_lines.append(it["summary"])
+            plain_lines.append(f"Read in Reader: {it['reader']}")
+            plain_lines.append("")
+    else:
+        plain_lines.append("No stories in the last 24 hours.")
 
-plain_lines += ["", "RUGBY UNION"]
-if rugby_union_items:
-    for it in rugby_union_items:
-        plain_lines += [f"- {it['title']}", it["summary"], f"Read in Reader: {it['reader']}", ""]
-else:
-    plain_lines.append("No stories in the last 24 hours.")
-
-plain_lines += ["", "PUNK ROCK"]
-if punk_rock_items:
-    for it in punk_rock_items:
-        plain_lines += [f"- {it['title']}", it["summary"], f"Read in Reader: {it['reader']}", ""]
-else:
-    plain_lines.append("No stories in the last 24 hours.")
+add_plain_section("UK Politics", uk_politics_items)
+add_plain_section("Rugby Union", rugby_union_items)
+add_plain_section("Punk Rock", punk_rock_items)
 
 plain_lines += ["", "WEATHER (CARDIFF)"]
 if wx.get("ok"):
