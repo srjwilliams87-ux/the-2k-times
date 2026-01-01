@@ -14,7 +14,7 @@ import feedparser
 # ----------------------------
 # DEBUG / VERSION
 # ----------------------------
-TEMPLATE_VERSION = "v-newspaper-14"
+TEMPLATE_VERSION = "v-newspaper-15"
 DEBUG_SUBJECT = True  # set False when you're happy
 
 # ----------------------------
@@ -63,13 +63,11 @@ RUGBY_UNION_FEEDS = [
     "https://feeds.bbci.co.uk/sport/rugby-union/rss.xml",
 ]
 
-# Punk is subjective — pick better sources later. These are decent starters.
+# Punk is subjective — swap/add better sources via env anytime
 PUNK_ROCK_FEEDS = [
     "https://www.punknews.org/backend.xml",
 ]
 
-# Optional: override via env to set your own feeds (comma-separated)
-# e.g. PUNK_ROCK_FEEDS="https://example.com/feed.xml,https://another.com/rss"
 def env_csv(name: str):
     v = (os.environ.get(name) or "").strip()
     if not v:
@@ -87,7 +85,6 @@ def reader_link(url: str) -> str:
     url = (url or "").strip()
     if not url:
         return ""
-    # URL encode so your /read endpoint receives it safely
     return f"{READER_BASE_URL}/read?url={quote(url, safe='')}"
 
 def strip_html(text: str) -> str:
@@ -155,7 +152,6 @@ def collect_articles(feed_urls, limit):
     return unique[:limit]
 
 def collect_count(feed_urls):
-    # count all qualifying articles (not capped)
     count = 0
     seen = set()
     for feed_url in feed_urls:
@@ -204,21 +200,7 @@ def fetch_url(url: str, timeout: int = 14) -> str:
 # WEATHER + SUNRISE/SUNSET (Cardiff) via Open-Meteo (no key)
 # ----------------------------
 def fetch_cardiff_weather():
-    """
-    Returns dict:
-      {
-        "ok": bool,
-        "current_c": int/float,
-        "feels_c": int/float,
-        "hi_c": int/float,
-        "lo_c": int/float,
-        "sunrise": "HH:MM",
-        "sunset": "HH:MM"
-      }
-    """
-    # Cardiff approx coords
     lat, lon = 51.4816, -3.1791
-    # Ask for current + apparent temp, plus daily highs/lows and sunrise/sunset
     url = (
         "https://api.open-meteo.com/v1/forecast"
         f"?latitude={lat}&longitude={lon}"
@@ -243,7 +225,6 @@ def fetch_cardiff_weather():
         sunset_iso = (daily.get("sunset") or [""])[0]
 
         def hhmm(iso):
-            # iso like "2025-12-31T08:18"
             if not iso or "T" not in iso:
                 return "--:--"
             return iso.split("T", 1)[1][:5]
@@ -264,7 +245,6 @@ def fmt_temp(x):
     if x is None:
         return "--"
     try:
-        # keep integers nice if possible
         if float(x).is_integer():
             return str(int(float(x)))
         return f"{float(x):.1f}"
@@ -300,11 +280,6 @@ class _H2Extractor(HTMLParser):
             self._buf.append(data)
 
 def fetch_who_in_space():
-    """
-    Returns:
-      people: list[{"name": str, "station": str}]
-      err: optional error string
-    """
     try:
         html = fetch_url("https://whoisinspace.com/")
         parser = _H2Extractor()
@@ -356,6 +331,10 @@ def fetch_who_in_space():
 # ----------------------------
 world_items = collect_articles(WORLD_FEEDS, limit=3)
 
+uk_politics_items = collect_articles(UK_POLITICS_FEEDS, limit=3)
+rugby_union_items = collect_articles(RUGBY_UNION_FEEDS, limit=5)
+punk_rock_items = collect_articles(PUNK_ROCK_FEEDS, limit=3)
+
 uk_politics_count = collect_count(UK_POLITICS_FEEDS)
 rugby_union_count = collect_count(RUGBY_UNION_FEEDS)
 punk_rock_count = collect_count(PUNK_ROCK_FEEDS)
@@ -376,7 +355,6 @@ def build_html():
 
     font = '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif'
     date_line = now_uk.strftime("%d.%m.%Y")
-
     size_fix_inline = "-webkit-text-size-adjust:100%;text-size-adjust:100%;-ms-text-size-adjust:100%;"
 
     style_block = """
@@ -387,17 +365,29 @@ def build_html():
         .divider{display:none!important}
         .colpadL{padding-left:0!important}
         .colpadR{padding-right:0!important}
+        .colpadX{padding-left:0!important;padding-right:0!important}
       }
     </style>
     """
 
+    def section_heading(text, emoji):
+        return f"""
+          <span style="font-family:{font};
+                       font-size:14px !important;
+                       font-weight:900 !important;
+                       letter-spacing:2px;
+                       text-transform:uppercase;
+                       color:{ink};
+                       {size_fix_inline}">
+            {emoji} {text}
+          </span>
+        """
+
     def story_block(i, it, lead=False):
-        # Top story headline SAME size as the other headlines (your preference)
         headline_size = "18px"
         headline_weight = "800"
         summary_size = "13.5px"
         summary_weight = "400"
-
         pad_top = "14px" if lead else "16px"
         left_bar = "border-left:4px solid #0f0f0f;padding-left:12px;" if lead else ""
 
@@ -415,7 +405,6 @@ def build_html():
         return f"""
         <table width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;">
           <tr><td style="height:{pad_top};font-size:0;line-height:0;">&nbsp;</td></tr>
-
           <tr>
             <td style="{left_bar}{size_fix_inline}">
               <table width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;">
@@ -466,7 +455,6 @@ def build_html():
                     </a>
                   </td>
                 </tr>
-
               </table>
             </td>
           </tr>
@@ -476,7 +464,51 @@ def build_html():
         </table>
         """
 
-    # Left column stories
+    def mini_story(it):
+        return f"""
+        <tr>
+          <td style="padding:10px 0 12px 0;{size_fix_inline}">
+            <div style="font-family:{font};font-size:15px;font-weight:800;line-height:1.25;color:{ink};">
+              {esc(it['title'])}
+            </div>
+            <div style="height:8px;"></div>
+            <div style="font-family:{font};font-size:13px;font-weight:400;line-height:1.65;color:{muted};">
+              {esc(it['summary'])}
+            </div>
+            <div style="height:10px;"></div>
+            <div style="font-family:{font};font-size:12px;font-weight:900;letter-spacing:1px;text-transform:uppercase;">
+              <a href="{esc(it['reader'])}" style="color:{link};text-decoration:none;">Read in Reader →</a>
+            </div>
+          </td>
+        </tr>
+        <tr><td style="height:1px;background:{rule};font-size:0;line-height:0;">&nbsp;</td></tr>
+        """
+
+    def mini_section(title, emoji, items, empty_text="No stories in the last 24 hours."):
+        if items:
+            rows = "".join(mini_story(it) for it in items)
+        else:
+            rows = f"""
+            <tr>
+              <td style="padding:10px 0 12px 0;font-family:{font};font-size:13px;line-height:1.6;color:{muted};{size_fix_inline}">
+                {esc(empty_text)}
+              </td>
+            </tr>
+            <tr><td style="height:1px;background:{rule};font-size:0;line-height:0;">&nbsp;</td></tr>
+            """
+        return f"""
+        <table width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;">
+          <tr>
+            <td style="padding:0 0 10px 0;">
+              {section_heading(title, emoji)}
+            </td>
+          </tr>
+          <tr><td style="height:1px;background:{rule};font-size:0;line-height:0;">&nbsp;</td></tr>
+          {rows}
+        </table>
+        """
+
+    # Left column stories (World)
     if world_items:
         world_html = ""
         for i, it in enumerate(world_items, start=1):
@@ -492,7 +524,7 @@ def build_html():
         </table>
         """
 
-    # Weather block
+    # Weather / sunrise
     if wx.get("ok"):
         weather_line = f"{fmt_temp(wx.get('current_c'))}°C (feels {fmt_temp(wx.get('feels_c'))}°C) · H {fmt_temp(wx.get('hi_c'))}°C / L {fmt_temp(wx.get('lo_c'))}°C"
         sunrise = wx.get("sunrise", "--:--")
@@ -502,7 +534,7 @@ def build_html():
         sunrise = "--:--"
         sunset = "--:--"
 
-    # Who's in space (ALL people)
+    # Space list (ALL)
     if who_err:
         space_html = f"<span style='color:{muted};'>Unavailable ({esc(who_err)})</span>"
     elif not people_in_space:
@@ -513,19 +545,10 @@ def build_html():
             rows.append(f"{esc(p['name'])} <span style='color:{muted};'>({esc(p['station'])})</span>")
         space_html = "<br/>".join(rows)
 
-    # Section heading helper (all caps, bold, bigger)
-    def section_heading(text, emoji):
-        return f"""
-          <span style="font-family:{font};
-                       font-size:14px !important;
-                       font-weight:900 !important;
-                       letter-spacing:2px;
-                       text-transform:uppercase;
-                       color:{ink};
-                       {size_fix_inline}">
-            {emoji} {text}
-          </span>
-        """
+    # Build the three additional sections (these were “missing” before)
+    uk_section_html = mini_section("UK Politics", "🏛️", uk_politics_items)
+    rugby_section_html = mini_section("Rugby Union", "🏉", rugby_union_items)
+    punk_section_html = mini_section("Punk Rock", "🎸", punk_rock_items)
 
     return f"""
     <html>
@@ -576,7 +599,7 @@ def build_html():
                 </td>
               </tr>
 
-              <!-- Thin rule (only) -->
+              <!-- Thin rule -->
               <tr>
                 <td style="padding:0 20px 14px 20px;">
                   <div style="height:1px;background:{rule};"></div>
@@ -596,7 +619,7 @@ def build_html():
                 </td>
               </tr>
 
-              <!-- Content columns -->
+              <!-- World + Sidebar columns -->
               <tr>
                 <td style="padding:12px 20px 22px 20px;">
                   <table width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;">
@@ -614,7 +637,7 @@ def build_html():
                       <td class="stack colpadL" width="50%" valign="top" style="padding-left:12px;">
                         <table width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;">
 
-                          <!-- INSIDE TODAY (aligned down to match TOP STORY) -->
+                          <!-- INSIDE TODAY -->
                           <tr>
                             <td style="padding-top:14px;">
                               {section_heading("Inside Today", "📰")}
@@ -656,9 +679,7 @@ def build_html():
                           <tr><td style="height:16px;font-size:0;line-height:0;">&nbsp;</td></tr>
 
                           <!-- Weather -->
-                          <tr>
-                            <td>{section_heading("Weather · Cardiff", "🌦️")}</td>
-                          </tr>
+                          <tr><td>{section_heading("Weather · Cardiff", "🌦️")}</td></tr>
                           <tr><td style="height:10px;font-size:0;line-height:0;">&nbsp;</td></tr>
                           <tr>
                             <td style="font-family:{font};
@@ -673,9 +694,7 @@ def build_html():
                           <tr><td style="height:18px;font-size:0;line-height:0;">&nbsp;</td></tr>
 
                           <!-- Sunrise/Sunset -->
-                          <tr>
-                            <td>{section_heading("Sunrise / Sunset", "🌅")}</td>
-                          </tr>
+                          <tr><td>{section_heading("Sunrise / Sunset", "🌅")}</td></tr>
                           <tr><td style="height:10px;font-size:0;line-height:0;">&nbsp;</td></tr>
                           <tr>
                             <td style="font-family:{font};
@@ -692,9 +711,7 @@ def build_html():
                           <tr><td style="height:18px;font-size:0;line-height:0;">&nbsp;</td></tr>
 
                           <!-- Who's in space -->
-                          <tr>
-                            <td>{section_heading("Who's in Space", "🚀")}</td>
-                          </tr>
+                          <tr><td>{section_heading("Who's in Space", "🚀")}</td></tr>
                           <tr><td style="height:10px;font-size:0;line-height:0;">&nbsp;</td></tr>
                           <tr>
                             <td style="font-family:{font};
@@ -708,6 +725,40 @@ def build_html():
                           </tr>
 
                         </table>
+                      </td>
+
+                    </tr>
+                  </table>
+                </td>
+              </tr>
+
+              <!-- Divider before the 3 extra sections -->
+              <tr>
+                <td style="padding:0 20px 18px 20px;">
+                  <div style="height:1px;background:{rule};"></div>
+                </td>
+              </tr>
+
+              <!-- THREE SECTIONS (these were missing before) -->
+              <tr>
+                <td style="padding:0 20px 22px 20px;">
+                  <table width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;">
+                    <tr>
+
+                      <td class="stack colpadX" width="33.33%" valign="top" style="padding-right:10px;">
+                        {uk_section_html}
+                      </td>
+
+                      <td class="divider" width="1" style="background:{rule};"></td>
+
+                      <td class="stack colpadX" width="33.33%" valign="top" style="padding:0 10px;">
+                        {rugby_section_html}
+                      </td>
+
+                      <td class="divider" width="1" style="background:{rule};"></td>
+
+                      <td class="stack colpadX" width="33.33%" valign="top" style="padding-left:10px;">
+                        {punk_section_html}
                       </td>
 
                     </tr>
@@ -759,9 +810,27 @@ plain_lines += [
     f"- Rugby Union ({rugby_union_count})",
     f"- Punk Rock ({punk_rock_count})",
     "",
-    "WEATHER (CARDIFF)",
+    "UK POLITICS",
 ]
+if uk_politics_items:
+    for it in uk_politics_items:
+        plain_lines += [f"- {it['title']}", it["summary"], f"Read in Reader: {it['reader']}", ""]
+else:
+    plain_lines.append("No stories in the last 24 hours.")
+plain_lines += ["", "RUGBY UNION"]
+if rugby_union_items:
+    for it in rugby_union_items:
+        plain_lines += [f"- {it['title']}", it["summary"], f"Read in Reader: {it['reader']}", ""]
+else:
+    plain_lines.append("No stories in the last 24 hours.")
+plain_lines += ["", "PUNK ROCK"]
+if punk_rock_items:
+    for it in punk_rock_items:
+        plain_lines += [f"- {it['title']}", it["summary"], f"Read in Reader: {it['reader']}", ""]
+else:
+    plain_lines.append("No stories in the last 24 hours.")
 
+plain_lines += ["", "WEATHER (CARDIFF)"]
 if wx.get("ok"):
     plain_lines.append(
         f"{fmt_temp(wx.get('current_c'))}°C (feels {fmt_temp(wx.get('feels_c'))}°C) · "
@@ -771,11 +840,7 @@ if wx.get("ok"):
 else:
     plain_lines.append("Weather unavailable.")
 
-plain_lines += [
-    "",
-    "WHO'S IN SPACE",
-]
-
+plain_lines += ["", "WHO'S IN SPACE"]
 if who_err:
     plain_lines.append(f"Unavailable ({who_err})")
 elif not people_in_space:
@@ -804,6 +869,7 @@ print("TEMPLATE_VERSION:", TEMPLATE_VERSION)
 print("Window (UK):", window_start.isoformat(), "→", now_uk.isoformat())
 print("World headlines:", len(world_items))
 print("Inside today counts:", uk_politics_count, rugby_union_count, punk_rock_count)
+print("UK items:", len(uk_politics_items), "Rugby items:", len(rugby_union_items), "Punk items:", len(punk_rock_items))
 print("Weather OK:", wx.get("ok", False))
 print("Who's in space:", len(people_in_space), ("ERR: " + who_err if who_err else ""))
 print("SMTP:", SMTP_HOST, SMTP_PORT)
