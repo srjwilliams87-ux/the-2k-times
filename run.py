@@ -14,7 +14,7 @@ import feedparser
 # ----------------------------
 # DEBUG / VERSION
 # ----------------------------
-TEMPLATE_VERSION = "v-newspaper-15"
+TEMPLATE_VERSION = "v-newspaper-16"
 DEBUG_SUBJECT = True  # set False when you're happy
 
 # ----------------------------
@@ -48,24 +48,35 @@ subject = (
 )
 
 # ----------------------------
-# FEEDS
+# FEEDS (defaults)
+# You can override any list with env CSV:
+#   UK_POLITICS_FEEDS="url1,url2"
+#   RUGBY_UNION_FEEDS="url1,url2"
+#   PUNK_ROCK_FEEDS="url1,url2"
 # ----------------------------
 WORLD_FEEDS = [
     "https://feeds.bbci.co.uk/news/world/rss.xml",
     "https://feeds.reuters.com/Reuters/worldNews",
 ]
 
+# UK Politics: BBC + Guardian + Reuters UK
 UK_POLITICS_FEEDS = [
     "https://feeds.bbci.co.uk/news/politics/rss.xml",
+    "https://www.theguardian.com/politics/rss",
+    "https://feeds.reuters.com/reuters/UKdomesticNews",
 ]
 
+# Rugby Union: BBC + RugbyPass + PlanetRugby (RSS endpoints can change; env override supported)
 RUGBY_UNION_FEEDS = [
     "https://feeds.bbci.co.uk/sport/rugby-union/rss.xml",
+    "https://www.rugbypass.com/feed/",
+    "https://www.planetrugby.com/feed",
 ]
 
-# Punk is subjective — swap/add better sources via env anytime
+# Punk Rock: Punknews + (fallback) Louder/Kerrang category feeds vary; env override supported
 PUNK_ROCK_FEEDS = [
     "https://www.punknews.org/backend.xml",
+    "https://www.loudersound.com/feeds/tag/punk",
 ]
 
 def env_csv(name: str):
@@ -135,15 +146,17 @@ def collect_articles(feed_urls, limit):
                     "url": link,
                     "reader": reader_link(link),
                     "published": published,
+                    "source": feed_url,
                 }
             )
 
     articles.sort(key=lambda x: x["published"], reverse=True)
 
+    # de-dupe by normalized title
     seen = set()
     unique = []
     for a in articles:
-        k = a["title"].lower()
+        k = a["title"].lower().strip()
         if k in seen:
             continue
         seen.add(k)
@@ -163,12 +176,10 @@ def collect_count(feed_urls):
                 continue
             if looks_like_low_value(title):
                 continue
-
             published = parse_time(e)
             if not published or not (window_start <= published <= now_uk):
                 continue
-
-            k = title.lower()
+            k = title.lower().strip()
             if k in seen:
                 continue
             seen.add(k)
@@ -302,7 +313,8 @@ def fetch_who_in_space():
             if not clean:
                 continue
 
-            if " - " in clean and any(k in clean.lower() for k in ["iss", "tiangong", "space station", "soyuz", "crew", "shenzhou"]):
+            # group header
+            if " - " in clean and any(k in clean.lower() for k in ["iss", "tiangong", "space", "soyuz", "crew", "shenzhou"]):
                 current_station = normalize_station(clean)
                 continue
 
@@ -313,10 +325,11 @@ def fetch_who_in_space():
                     continue
                 people.append({"name": clean, "station": current_station})
 
+        # de-dupe
         seen = set()
         uniq = []
         for p in people:
-            k = p["name"].lower()
+            k = p["name"].lower().strip()
             if k in seen:
                 continue
             seen.add(k)
@@ -484,7 +497,7 @@ def build_html():
         <tr><td style="height:1px;background:{rule};font-size:0;line-height:0;">&nbsp;</td></tr>
         """
 
-    def mini_section(title, emoji, items, empty_text="No stories in the last 24 hours."):
+    def stacked_section(title, emoji, items, empty_text="No stories in the last 24 hours."):
         if items:
             rows = "".join(mini_story(it) for it in items)
         else:
@@ -508,7 +521,7 @@ def build_html():
         </table>
         """
 
-    # Left column stories (World)
+    # World stories
     if world_items:
         world_html = ""
         for i, it in enumerate(world_items, start=1):
@@ -545,10 +558,10 @@ def build_html():
             rows.append(f"{esc(p['name'])} <span style='color:{muted};'>({esc(p['station'])})</span>")
         space_html = "<br/>".join(rows)
 
-    # Build the three additional sections (these were “missing” before)
-    uk_section_html = mini_section("UK Politics", "🏛️", uk_politics_items)
-    rugby_section_html = mini_section("Rugby Union", "🏉", rugby_union_items)
-    punk_section_html = mini_section("Punk Rock", "🎸", punk_rock_items)
+    # Stacked sections (full width)
+    uk_section_html = stacked_section("UK Politics", "🏛️", uk_politics_items)
+    rugby_section_html = stacked_section("Rugby Union", "🏉", rugby_union_items)
+    punk_section_html = stacked_section("Punk Rock", "🎸", punk_rock_items)
 
     return f"""
     <html>
@@ -732,37 +745,31 @@ def build_html():
                 </td>
               </tr>
 
-              <!-- Divider before the 3 extra sections -->
+              <!-- Divider -->
               <tr>
                 <td style="padding:0 20px 18px 20px;">
                   <div style="height:1px;background:{rule};"></div>
                 </td>
               </tr>
 
-              <!-- THREE SECTIONS (these were missing before) -->
+              <!-- STACKED: UK Politics -->
               <tr>
                 <td style="padding:0 20px 22px 20px;">
-                  <table width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;">
-                    <tr>
+                  {uk_section_html}
+                </td>
+              </tr>
 
-                      <td class="stack colpadX" width="33.33%" valign="top" style="padding-right:10px;">
-                        {uk_section_html}
-                      </td>
+              <!-- STACKED: Rugby Union -->
+              <tr>
+                <td style="padding:0 20px 22px 20px;">
+                  {rugby_section_html}
+                </td>
+              </tr>
 
-                      <td class="divider" width="1" style="background:{rule};"></td>
-
-                      <td class="stack colpadX" width="33.33%" valign="top" style="padding:0 10px;">
-                        {rugby_section_html}
-                      </td>
-
-                      <td class="divider" width="1" style="background:{rule};"></td>
-
-                      <td class="stack colpadX" width="33.33%" valign="top" style="padding-left:10px;">
-                        {punk_section_html}
-                      </td>
-
-                    </tr>
-                  </table>
+              <!-- STACKED: Punk Rock -->
+              <tr>
+                <td style="padding:0 20px 22px 20px;">
+                  {punk_section_html}
                 </td>
               </tr>
 
@@ -809,20 +816,22 @@ plain_lines += [
     f"- UK Politics ({uk_politics_count})",
     f"- Rugby Union ({rugby_union_count})",
     f"- Punk Rock ({punk_rock_count})",
-    "",
-    "UK POLITICS",
 ]
+
+plain_lines += ["", "UK POLITICS"]
 if uk_politics_items:
     for it in uk_politics_items:
         plain_lines += [f"- {it['title']}", it["summary"], f"Read in Reader: {it['reader']}", ""]
 else:
     plain_lines.append("No stories in the last 24 hours.")
+
 plain_lines += ["", "RUGBY UNION"]
 if rugby_union_items:
     for it in rugby_union_items:
         plain_lines += [f"- {it['title']}", it["summary"], f"Read in Reader: {it['reader']}", ""]
 else:
     plain_lines.append("No stories in the last 24 hours.")
+
 plain_lines += ["", "PUNK ROCK"]
 if punk_rock_items:
     for it in punk_rock_items:
@@ -872,6 +881,9 @@ print("Inside today counts:", uk_politics_count, rugby_union_count, punk_rock_co
 print("UK items:", len(uk_politics_items), "Rugby items:", len(rugby_union_items), "Punk items:", len(punk_rock_items))
 print("Weather OK:", wx.get("ok", False))
 print("Who's in space:", len(people_in_space), ("ERR: " + who_err if who_err else ""))
+print("Feeds UK:", UK_POLITICS_FEEDS)
+print("Feeds Rugby:", RUGBY_UNION_FEEDS)
+print("Feeds Punk:", PUNK_ROCK_FEEDS)
 print("SMTP:", SMTP_HOST, SMTP_PORT)
 print("Reader base:", READER_BASE_URL)
 
