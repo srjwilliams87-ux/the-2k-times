@@ -1,7 +1,6 @@
-flask
-requests
-feedparser
-gunicorn
-readability-lxml
-lxml
-beautifulsoup4
+feedparser==6.0.11
+requests==2.32.3
+beautifulsoup4==4.12.3
+lxml==5.2.2
+fastapi==0.115.0
+uvicorn==0.30.6
