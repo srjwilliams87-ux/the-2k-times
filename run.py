@@ -1,24 +1,22 @@
 import os
 import re
 import smtplib
-import ssl
-import json
-import urllib.parse
-import urllib.request
 from email.message import EmailMessage
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
+from urllib.parse import urlparse
 
 import feedparser
+import requests
 
 # ----------------------------
 # DEBUG / VERSION
 # ----------------------------
-TEMPLATE_VERSION = "v-newspaper-17"
+TEMPLATE_VERSION = "v-newspaper-16"
 DEBUG_SUBJECT = True  # set False when you're happy
 
 # ----------------------------
-# ENV
+# ENV (Mailgun / Sending)
 # ----------------------------
 MAILGUN_DOMAIN = os.environ.get("MAILGUN_DOMAIN")
 EMAIL_TO = os.environ.get("EMAIL_TO")
@@ -26,10 +24,11 @@ EMAIL_FROM_NAME = os.environ.get("EMAIL_FROM_NAME", "The 2k Times")
 SMTP_USER = os.environ.get("MAILGUN_SMTP_USER")
 SMTP_PASS = os.environ.get("MAILGUN_SMTP_PASS")
 
-READER_BASE_URL = (os.environ.get("READER_BASE_URL", "https://the-2k-times.onrender.com") or "").rstrip("/")
-
 SMTP_HOST = os.environ.get("MAILGUN_SMTP_HOST", "smtp.mailgun.org")
 SMTP_PORT = int(os.environ.get("MAILGUN_SMTP_PORT", "587"))
+
+# Reader service base
+READER_BASE_URL = (os.environ.get("READER_BASE_URL", "https://the-2k-times.onrender.com") or "").rstrip("/")
 
 if not all([MAILGUN_DOMAIN, EMAIL_TO, SMTP_USER, SMTP_PASS]):
     raise SystemExit(
@@ -37,7 +36,7 @@ if not all([MAILGUN_DOMAIN, EMAIL_TO, SMTP_USER, SMTP_PASS]):
     )
 
 # ----------------------------
-# TIME
+# TIME WINDOW
 # ----------------------------
 TZ = ZoneInfo("Europe/London")
 now_uk = datetime.now(TZ)
@@ -51,30 +50,53 @@ subject = (
 )
 
 # ----------------------------
-# SOURCES
+# FEEDS
 # ----------------------------
-WORLD_FEEDS = [
-    "https://feeds.bbci.co.uk/news/world/rss.xml",
-    "https://feeds.reuters.com/Reuters/worldNews",
-]
+# Allow overriding via env vars so you can tweak without code changes.
+def env_csv(name: str, fallback: list[str]) -> list[str]:
+    raw = (os.environ.get(name) or "").strip()
+    if not raw:
+        return fallback
+    return [x.strip() for x in raw.split(",") if x.strip()]
 
-UK_POLITICS_FEEDS = [
-    "https://feeds.bbci.co.uk/news/politics/rss.xml",
-    "https://www.theguardian.com/politics/rss",
-    "https://www.reuters.com/rssFeed/politicsNews",  # optional, may fail sometimes
-]
+WORLD_FEEDS = env_csv(
+    "WORLD_FEEDS",
+    [
+        "https://feeds.bbci.co.uk/news/world/rss.xml",
+        "https://feeds.reuters.com/Reuters/worldNews",
+    ],
+)
 
-RUGBY_FEEDS = [
-    "https://feeds.bbci.co.uk/sport/rugby-union/rss.xml",   # BBC Sport Rugby Union
-    "https://www.rugbypass.com/feed/",                      # RugbyPass
-    "https://www.planetrugby.com/feed/",                    # Planet Rugby
-    "https://www.rugbyworld.com/feed",                      # Rugby World (often works)
-]
+UK_POLITICS_FEEDS = env_csv(
+    "UK_POLITICS_FEEDS",
+    [
+        "https://feeds.bbci.co.uk/news/politics/rss.xml",
+        "https://www.theguardian.com/politics/rss",
+        "https://feeds.reuters.com/reuters/UKdomesticNews",
+    ],
+)
 
-PUNK_ROCK_FEEDS = [
-    "https://www.punknews.org/rss",
-    "https://www.kerrang.com/feed",  # optional
-]
+RUGBY_FEEDS = env_csv(
+    "RUGBY_FEEDS",
+    [
+        # Requested + reliable-ish defaults
+        "https://feeds.bbci.co.uk/sport/rugby-union/rss.xml",
+        "https://www.rugbypass.com/feed/",
+        "https://www.planetrugby.com/feed",
+        # World Rugby RSS varies; include, harmless if it returns empty
+        "https://www.world.rugby/rss",
+    ],
+)
+
+PUNK_FEEDS = env_csv(
+    "PUNK_FEEDS",
+    [
+        # You can swap these later if you have “original sources” you prefer
+        "https://www.punknews.org/rss",
+        "https://www.kerrang.com/feed",
+        "https://loudwire.com/feed/",
+    ],
+)
 
 # ----------------------------
 # HELPERS
@@ -83,18 +105,7 @@ def reader_link(url: str) -> str:
     url = (url or "").strip()
     if not url:
         return ""
-    return f"{READER_BASE_URL}/read?url={urllib.parse.quote(url, safe='')}"
-
-
-def esc(s: str) -> str:
-    return (
-        (s or "")
-        .replace("&", "&amp;")
-        .replace("<", "&lt;")
-        .replace(">", "&gt;")
-        .replace('"', "&quot;")
-        .replace("'", "&#39;")
-    )
+    return f"{READER_BASE_URL}/read?url={url}"
 
 
 def strip_html(text: str) -> str:
@@ -128,12 +139,8 @@ def looks_like_low_value(title: str) -> bool:
 def collect_articles(feed_urls, limit):
     articles = []
     for feed_url in feed_urls:
-        try:
-            feed = feedparser.parse(feed_url)
-        except Exception:
-            continue
-
-        for e in getattr(feed, "entries", []) or []:
+        feed = feedparser.parse(feed_url)
+        for e in feed.entries:
             title = getattr(e, "title", "").strip()
             link = getattr(e, "link", "").strip()
             if not title or not link:
@@ -156,8 +163,10 @@ def collect_articles(feed_urls, limit):
                 }
             )
 
+    # newest first
     articles.sort(key=lambda x: x["published"], reverse=True)
 
+    # de-dupe by title
     seen = set()
     unique = []
     for a in articles:
@@ -170,207 +179,229 @@ def collect_articles(feed_urls, limit):
     return unique[:limit]
 
 
-def fetch_url(url: str, timeout: int = 10, headers: dict | None = None) -> bytes:
-    headers = headers or {}
-    req = urllib.request.Request(
-        url,
-        headers={
-            "User-Agent": "Mozilla/5.0 (The 2k Times bot)",
-            "Accept": "*/*",
-            **headers,
-        },
-        method="GET",
+def esc(s: str) -> str:
+    return (
+        (s or "")
+        .replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+        .replace('"', "&quot;")
+        .replace("'", "&#39;")
     )
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
-        return resp.read()
-
-
-def fetch_json(url: str, timeout: int = 10) -> dict:
-    raw = fetch_url(url, timeout=timeout, headers={"Accept": "application/json"})
-    return json.loads(raw.decode("utf-8", errors="replace"))
-
 
 # ----------------------------
-# DATA COLLECTION
+# WEATHER + SUNRISE/SUNSET (Cardiff)
+# Uses Open-Meteo (no key)
 # ----------------------------
-world_items = collect_articles(WORLD_FEEDS, limit=3)
-uk_politics_items = collect_articles(UK_POLITICS_FEEDS, limit=5)
-rugby_items = collect_articles(RUGBY_FEEDS, limit=7)
-punk_items = collect_articles(PUNK_ROCK_FEEDS, limit=5)
+def get_cardiff_weather():
+    # Cardiff approx
+    lat = 51.4816
+    lon = -3.1791
 
-# ----------------------------
-# CARDIFF WEATHER + SUN (Open-Meteo)
-# ----------------------------
-def get_cardiff_weather_and_sun():
-    lat, lon = 51.4816, -3.1791
     url = (
-        "https://api.open-meteo.com/v1/forecast?"
-        f"latitude={lat}&longitude={lon}"
+        "https://api.open-meteo.com/v1/forecast"
+        f"?latitude={lat}&longitude={lon}"
+        "&timezone=Europe%2FLondon"
         "&current=temperature_2m,apparent_temperature"
         "&daily=temperature_2m_max,temperature_2m_min,sunrise,sunset"
-        "&timezone=Europe%2FLondon"
     )
 
     try:
-        data = fetch_json(url, timeout=12)
+        r = requests.get(url, timeout=10)
+        r.raise_for_status()
+        data = r.json()
 
-        cur = (data.get("current") or {})
-        daily = (data.get("daily") or {})
+        cur = data.get("current", {}) or {}
+        daily = (data.get("daily", {}) or {})
 
-        temp = cur.get("temperature_2m")
+        t = cur.get("temperature_2m")
         feels = cur.get("apparent_temperature")
 
-        hi = (daily.get("temperature_2m_max") or [None])[0]
-        lo = (daily.get("temperature_2m_min") or [None])[0]
+        tmax_list = daily.get("temperature_2m_max") or []
+        tmin_list = daily.get("temperature_2m_min") or []
+        sunrise_list = daily.get("sunrise") or []
+        sunset_list = daily.get("sunset") or []
 
-        sunrise_raw = (daily.get("sunrise") or [None])[0]
-        sunset_raw = (daily.get("sunset") or [None])[0]
+        tmax = tmax_list[0] if tmax_list else None
+        tmin = tmin_list[0] if tmin_list else None
 
-        def hhmm(dt_str: str | None):
-            if not dt_str:
-                return "--:--"
-            m = re.search(r"T(\d{2}:\d{2})", dt_str)
-            return m.group(1) if m else "--:--"
+        sunrise_iso = sunrise_list[0] if sunrise_list else None
+        sunset_iso = sunset_list[0] if sunset_list else None
+
+        def hhmm(iso_str):
+            # open-meteo gives "YYYY-MM-DDTHH:MM"
+            if not iso_str:
+                return None
+            m = re.search(r"T(\d{2}:\d{2})", iso_str)
+            return m.group(1) if m else None
+
+        sunrise = hhmm(sunrise_iso)
+        sunset = hhmm(sunset_iso)
 
         return {
-            "ok": True,
-            "temp_c": temp,
-            "feels_c": feels,
-            "hi_c": hi,
-            "lo_c": lo,
-            "sunrise": hhmm(sunrise_raw),
-            "sunset": hhmm(sunset_raw),
+            "temp": t,
+            "feels": feels,
+            "hi": tmax,
+            "lo": tmin,
+            "sunrise": sunrise,
+            "sunset": sunset,
         }
     except Exception:
-        return {"ok": False}
-
-
-wx = get_cardiff_weather_and_sun()
-
-# ----------------------------
-# WX DISPLAY STRINGS (FIXES wx_line NameError)
-# ----------------------------
-def _fmt_c(v):
-    if v is None:
-        return "--"
-    try:
-        return f"{float(v):.1f}".rstrip("0").rstrip(".")
-    except Exception:
-        return "--"
-
-if wx.get("ok"):
-    wx_line = f"{_fmt_c(wx.get('temp_c'))}°C (feels {_fmt_c(wx.get('feels_c'))}°C) · H {_fmt_c(wx.get('hi_c'))}°C / L {_fmt_c(wx.get('lo_c'))}°C"
-    sunrise_plain = f"Sunrise: {wx.get('sunrise')} · Sunset: {wx.get('sunset')}"
-else:
-    wx_line = "Weather unavailable."
-    sunrise_plain = "Sunrise: --:-- · Sunset: --:--"
+        return {
+            "temp": None,
+            "feels": None,
+            "hi": None,
+            "lo": None,
+            "sunrise": None,
+            "sunset": None,
+        }
 
 # ----------------------------
-# WHO'S IN SPACE (whoisinspace.com)
+# WHO'S IN SPACE (from whoisinspace.com + fallback)
 # ----------------------------
 def get_people_in_space():
-    url = "https://whoisinspace.com/"
+    """
+    Returns list of dicts: [{"name": "...", "craft": "ISS"}, ...]
+    Primary: whoisinspace.com
+    Fallback: open-notify (craft only; less accurate sometimes)
+    """
     people = []
 
+    # Try a few likely JSON endpoints first (if they exist, great; if not, harmless)
+    candidate_json = [
+        "https://whoisinspace.com/api/people",
+        "https://whoisinspace.com/people.json",
+        "https://whoisinspace.com/data.json",
+    ]
+
+    for jurl in candidate_json:
+        try:
+            r = requests.get(jurl, timeout=10, headers={"User-Agent": "The2kTimes/1.0"})
+            if r.status_code != 200:
+                continue
+            data = r.json()
+            # Attempt to normalize common shapes
+            # Shape A: {"people":[{"name":"X","craft":"ISS"}, ...]}
+            if isinstance(data, dict) and isinstance(data.get("people"), list):
+                for p in data["people"]:
+                    name = (p.get("name") or "").strip()
+                    craft = (p.get("craft") or p.get("station") or "").strip()
+                    if name and craft:
+                        people.append({"name": name, "craft": craft})
+                if people:
+                    return people
+            # Shape B: [{"name":"X","craft":"ISS"}, ...]
+            if isinstance(data, list):
+                for p in data:
+                    if isinstance(p, dict):
+                        name = (p.get("name") or "").strip()
+                        craft = (p.get("craft") or p.get("station") or "").strip()
+                        if name and craft:
+                            people.append({"name": name, "craft": craft})
+                if people:
+                    return people
+        except Exception:
+            pass
+
+    # HTML parse fallback
     try:
-        html = fetch_url(url, timeout=12).decode("utf-8", errors="replace")
+        html = requests.get(
+            "https://whoisinspace.com/",
+            timeout=10,
+            headers={"User-Agent": "The2kTimes/1.0"},
+        ).text
 
-        # Try to extract JSON-LD people if present (more reliable than HTML text)
-        # (If not present, we fallback to heuristic parsing)
-        jsonld = re.findall(r'<script[^>]+type="application/ld\+json"[^>]*>(.*?)</script>', html, flags=re.I | re.S)
-        for blob in jsonld:
-            try:
-                data = json.loads(blob.strip())
-                # Some sites wrap in list
-                if isinstance(data, list):
-                    for item in data:
-                        if isinstance(item, dict):
-                            data = item
-                            break
+        # Pull lines with likely "ISS" / "Tiangong" / etc from visible text
+        # We’ll keep it intentionally forgiving.
+        text = re.sub(r"<script[\s\S]*?</script>", " ", html, flags=re.I)
+        text = re.sub(r"<style[\s\S]*?</style>", " ", text, flags=re.I)
+        text = re.sub(r"<[^>]+>", "\n", text)
+        text = re.sub(r"\n{2,}", "\n", text)
 
-                # Look for a "Person" list
-                # (This is best-effort; if structure differs, we fallback below.)
-                if isinstance(data, dict):
-                    graph = data.get("@graph")
-                    if isinstance(graph, list):
-                        for node in graph:
-                            if isinstance(node, dict) and node.get("@type") == "Person":
-                                name = node.get("name")
-                                if name:
-                                    people.append({"name": name.strip(), "craft": "In space"})
-            except Exception:
-                pass
+        lines = [ln.strip() for ln in text.split("\n") if ln.strip()]
+        # Heuristic: look for "ISS" or "Tiangong" near a name
+        craft_words = ["ISS", "Tiangong", "Shenzhou", "Crew Dragon", "Soyuz"]
 
-        # If JSON-LD didn’t yield enough, do heuristic HTML parsing
-        if len(people) < 3:
-            # Find craft headings and name-like strings after them.
-            craft_markers = []
-            for craft in ["ISS", "Tiangong"]:
-                for m in re.finditer(rf">{craft}[^<]*<", html, flags=re.IGNORECASE):
-                    craft_markers.append((m.start(), craft))
-            craft_markers.sort(key=lambda x: x[0])
+        for ln in lines:
+            if not any(c.lower() in ln.lower() for c in craft_words):
+                continue
 
-            if craft_markers:
-                for idx, (pos, craft_guess) in enumerate(craft_markers):
-                    end = craft_markers[idx + 1][0] if idx + 1 < len(craft_markers) else len(html)
-                    segment = html[pos:end]
+            # Examples we try to catch:
+            # "Jane Doe — ISS"
+            # "Jane Doe (ISS)"
+            # "ISS: Jane Doe, John Smith"
+            m = re.search(r"^(.*?)(?:\(|—|–|-)\s*(ISS|Tiangong|Shenzhou|Soyuz|Crew Dragon)\s*\)?$", ln, re.I)
+            if m:
+                name = m.group(1).strip(" :–—-")
+                craft = m.group(2).strip()
+                if len(name) >= 3:
+                    people.append({"name": name, "craft": craft})
+                continue
 
-                    craft_label = "ISS" if craft_guess.lower() == "iss" else "Tiangong"
+            m2 = re.search(r"^(ISS|Tiangong)\s*:\s*(.+)$", ln, re.I)
+            if m2:
+                craft = m2.group(1).strip()
+                names = [x.strip() for x in re.split(r",|;|•", m2.group(2)) if x.strip()]
+                for name in names:
+                    if len(name) >= 3:
+                        people.append({"name": name, "craft": craft})
+                continue
 
-                    name_candidates = re.findall(
-                        r">(?!ISS|Tiangong)([A-Z][a-z]+(?:\s+[A-Z][a-z'\-]+){1,3})<",
-                        segment
-                    )
-                    for nm in name_candidates:
-                        nm = nm.strip()
-                        if any(bad in nm.lower() for bad in ["daily", "edition", "read in", "space", "station", "crew"]):
-                            continue
-                        people.append({"name": nm, "craft": craft_label})
-
-        # De-dupe, keep order
+        # Deduplicate
         seen = set()
-        out = []
+        uniq = []
         for p in people:
-            name = (p.get("name") or "").strip()
-            craft = (p.get("craft") or "").strip() or "In space"
-            if not name:
+            k = (p["name"].lower(), p["craft"].lower())
+            if k in seen:
                 continue
-
-            # normalize craft display
-            c = craft
-            if c.lower().startswith("iss"):
-                c = "ISS"
-            elif "tiangong" in c.lower():
-                c = "Tiangong"
-
-            key = (name.lower(), c.lower())
-            if key in seen:
-                continue
-            seen.add(key)
-            out.append({"name": name, "craft": c})
-
-        return out
-
+            seen.add(k)
+            uniq.append(p)
+        if uniq:
+            return uniq
     except Exception:
-        return []
+        pass
 
+    # Last resort fallback (not whoisinspace.com, but better than nothing)
+    try:
+        r = requests.get("http://api.open-notify.org/astros.json", timeout=10)
+        if r.status_code == 200:
+            data = r.json()
+            if isinstance(data, dict) and isinstance(data.get("people"), list):
+                return [{"name": p.get("name", "").strip(), "craft": p.get("craft", "").strip()}
+                        for p in data["people"]
+                        if (p.get("name") and p.get("craft"))]
+    except Exception:
+        pass
 
-space_people = get_people_in_space()
+    return []
+
+# ----------------------------
+# COLLECT CONTENT
+# ----------------------------
+world_items = collect_articles(WORLD_FEEDS, limit=3)
+
+uk_pol_items = collect_articles(UK_POLITICS_FEEDS, limit=3)
+rugby_items = collect_articles(RUGBY_FEEDS, limit=5)
+punk_items = collect_articles(PUNK_FEEDS, limit=3)
+
+wx = get_cardiff_weather()
+people_in_space = get_people_in_space()
 
 # ----------------------------
 # HTML (Newspaper)
 # ----------------------------
 def build_html():
     outer_bg = "#111111"
-    paper = "#1b1b1b"
-    ink = "#f2f2f2"
-    muted = "#c7c7c7"
-    rule_light = "#2e2e2e"
-    link = "#7aa7ff"
+    paper = "#f7f5ef"
+    ink = "#111111"
+    muted = "#4a4a4a"
+    rule = "#ddd8cc"  # unify to thinnest line
+    link = "#0b57d0"
 
     font = '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif'
     date_line = now_uk.strftime("%d.%m.%Y")
 
+    # Prevent client “font boosting”
     size_fix_inline = "-webkit-text-size-adjust:100%;text-size-adjust:100%;-ms-text-size-adjust:100%;"
 
     style_block = """
@@ -385,17 +416,40 @@ def build_html():
     </style>
     """
 
-    def story_block(i, it, lead=False, show_kicker=False):
-        headline_size = "18px"  # top story same size as others
-        headline_weight = "800" if lead else "700"
-        summary_size = "13.5px"
-        summary_weight = "400"
-        pad_top = "18px" if lead else "16px"
+    def section_heading(label: str, emoji: str):
+        # Bold, larger, all caps, and emoji
+        return f"""
+        <tr>
+          <td style="padding:18px 20px 10px 20px;">
+            <span style="font-family:{font};
+                         font-size:14px !important;
+                         font-weight:900 !important;
+                         letter-spacing:2px;
+                         text-transform:uppercase;
+                         color:{ink};
+                         {size_fix_inline}">
+              {emoji} {esc(label)}
+            </span>
+          </td>
+        </tr>
+        <tr>
+          <td style="padding:0 20px;">
+            <div style="height:1px;background:{rule};font-size:0;line-height:0;">&nbsp;</div>
+          </td>
+        </tr>
+        """
 
-        left_bar = f"border-left:4px solid {ink};padding-left:12px;" if lead else ""
+    def story_block(i, it, lead=False):
+        # Top story headline now same size as other headlines
+        headline_size = "18px"
+        headline_weight = "900" if lead else "700"
+        summary_size = "13.5px"
+        summary_weight = "500" if lead else "400"
+        pad_top = "16px"
+        left_bar = "border-left:4px solid %s;padding-left:12px;" % ink if lead else ""
 
         kicker_row = ""
-        if show_kicker and lead:
+        if lead:
             kicker_row = f"""
             <tr>
               <td style="font-family:{font};font-size:11px;font-weight:900;letter-spacing:2px;
@@ -465,87 +519,189 @@ def build_html():
           </tr>
 
           <tr><td style="height:16px;font-size:0;line-height:0;">&nbsp;</td></tr>
-          <tr><td style="height:1px;background:{rule_light};font-size:0;line-height:0;">&nbsp;</td></tr>
+          <tr><td style="height:1px;background:{rule};font-size:0;line-height:0;">&nbsp;</td></tr>
         </table>
         """
 
-    def section_header(label: str, emoji: str):
-        return f"""
-        <tr>
-          <td style="padding:18px 20px 10px 20px;">
-            <span style="font-family:{font};
-                         font-size:12px !important;
-                         font-weight:900 !important;
-                         letter-spacing:2px;
-                         text-transform:uppercase;
-                         color:{ink};
-                         {size_fix_inline}">
-              {esc(emoji)} {esc(label)}
-            </span>
-          </td>
-        </tr>
-        <tr>
-          <td style="padding:0 20px;">
-            <div style="height:1px;background:{rule_light};"></div>
-          </td>
-        </tr>
-        """
-
-    # World HTML
-    if world_items:
-        world_html = ""
-        for i, it in enumerate(world_items, start=1):
-            world_html += story_block(i, it, lead=(i == 1), show_kicker=True)
-    else:
-        world_html = f"""
-        <table width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;">
-          <tr>
-            <td style="padding:18px 0;font-family:{font};color:{muted};font-size:14px;line-height:1.7;{size_fix_inline}">
-              No qualifying world headlines in the last 24 hours.
-            </td>
-          </tr>
-        </table>
-        """
-
-    inside_counts = [
-        f"UK Politics ({len(uk_politics_items)} stories)",
-        f"Rugby Union ({len(rugby_items)} stories)",
-        f"Punk Rock ({len(punk_items)} stories)",
-    ]
-
-    # HTML sunrise line (with emphasis)
-    sunrise_html = f"Sunrise: <span style='font-weight:800;color:{ink};'>{esc(wx.get('sunrise') if wx.get('ok') else '--:--')}</span> &nbsp;·&nbsp; Sunset: <span style='font-weight:800;color:{ink};'>{esc(wx.get('sunset') if wx.get('ok') else '--:--')}</span>"
-
-    if space_people:
-        space_lines = "<br/>".join([f"{esc(p['name'])} ({esc(p['craft'])})" for p in space_people])
-    else:
-        space_lines = "Space list unavailable."
-
-    def build_section_items(items, label, emoji):
-        if items:
-            blocks = ""
-            for idx, it in enumerate(items, start=1):
-                blocks += story_block(idx, it, lead=(idx == 1), show_kicker=False)
+    def build_story_list(items, limit, lead_first=True):
+        if not items:
             return f"""
-            {section_header(label, emoji)}
-            <tr>
-              <td style="padding:0 20px 6px 20px;">
-                {blocks}
-              </td>
-            </tr>
+            <table width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;">
+              <tr>
+                <td style="padding:16px 0;font-family:{font};color:{muted};font-size:14px;line-height:1.7;{size_fix_inline}">
+                  No stories in the last 24 hours.
+                </td>
+              </tr>
+              <tr><td style="height:1px;background:{rule};font-size:0;line-height:0;">&nbsp;</td></tr>
+            </table>
             """
-        return f"""
-        {section_header(label, emoji)}
-        <tr>
-          <td style="padding:14px 20px 18px 20px;font-family:{font};color:{muted};font-size:14px;line-height:1.7;{size_fix_inline}">
-            No stories in the last 24 hours.
-          </td>
-        </tr>
-        """
+        html = ""
+        for idx, it in enumerate(items[:limit], start=1):
+            html += story_block(idx, it, lead=(lead_first and idx == 1))
+        return html
 
-    uk_section_html = build_section_items(uk_politics_items, "UK Politics", "🏛️")
-    rugby_section_html = build_section_items(rugby_items, "Rugby Union", "🏉")
-    punk_section_html = build_section_items(punk_items, "Punk Rock", "🎸")
+    # Left column: World headlines
+    world_html = build_story_list(world_items, limit=3, lead_first=True)
+
+    # Right column: Inside Today + weather + sunrise/sunset + space
+    uk_count = len(uk_pol_items)
+    rugby_count = len(rugby_items)
+    punk_count = len(punk_items)
+
+    # Weather lines
+    def fmt_temp(x):
+        if x is None:
+            return "--"
+        # show 1dp if needed
+        try:
+            return f"{float(x):.1f}".rstrip("0").rstrip(".")
+        except Exception:
+            return str(x)
+
+    wx_line = f"{fmt_temp(wx['temp'])}°C (feels {fmt_temp(wx['feels'])}°C) · H {fmt_temp(wx['hi'])}°C / L {fmt_temp(wx['lo'])}°C"
+    sr = wx.get("sunrise") or "--:--"
+    ss = wx.get("sunset") or "--:--"
+
+    # Space list (ALL)
+    if people_in_space:
+        space_lines = "<br/>".join([f"{esc(p['name'])} ({esc(p['craft'])})" for p in people_in_space])
+    else:
+        space_lines = "No data available."
+
+    inside_today_block = f"""
+    <table width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;">
+
+      <!-- align top of inside today with top story: remove extra top spacing -->
+      <tr><td style="height:16px;font-size:0;line-height:0;">&nbsp;</td></tr>
+
+      <tr>
+        <td style="font-family:{font};
+                   font-size:14px !important;
+                   font-weight:900 !important;
+                   letter-spacing:2px;
+                   text-transform:uppercase;
+                   color:{ink};
+                   {size_fix_inline}">
+          🗞️ Inside Today
+        </td>
+      </tr>
+      <tr><td style="height:10px;font-size:0;line-height:0;">&nbsp;</td></tr>
+      <tr><td style="height:1px;background:{rule};font-size:0;line-height:0;">&nbsp;</td></tr>
+      <tr><td style="height:12px;font-size:0;line-height:0;">&nbsp;</td></tr>
+
+      <tr>
+        <td style="font-family:{font};
+                   font-size:15px !important;
+                   font-weight:600 !important;
+                   line-height:1.9;
+                   color:{muted};
+                   {size_fix_inline}">
+          • UK Politics ({uk_count} stories)<br/>
+          • Rugby Union ({rugby_count} stories)<br/>
+          • Punk Rock ({punk_count} stories)
+        </td>
+      </tr>
+
+      <tr><td style="height:14px;font-size:0;line-height:0;">&nbsp;</td></tr>
+
+      <tr>
+        <td style="font-family:{font};
+                   font-size:12px !important;
+                   font-weight:500;
+                   line-height:1.7;
+                   color:{muted};
+                   {size_fix_inline}">
+          Curated from the last 24 hours.<br/>
+          Reader links included.
+        </td>
+      </tr>
+
+      <tr><td style="height:18px;font-size:0;line-height:0;">&nbsp;</td></tr>
+      <tr><td style="height:1px;background:{rule};font-size:0;line-height:0;">&nbsp;</td></tr>
+      <tr><td style="height:16px;font-size:0;line-height:0;">&nbsp;</td></tr>
+
+      <tr>
+        <td style="font-family:{font};
+                   font-size:14px !important;
+                   font-weight:900 !important;
+                   letter-spacing:2px;
+                   text-transform:uppercase;
+                   color:{ink};
+                   {size_fix_inline}">
+          🌦️ Weather · Cardiff
+        </td>
+      </tr>
+      <tr><td style="height:10px;font-size:0;line-height:0;">&nbsp;</td></tr>
+      <tr>
+        <td style="font-family:{font};
+                   font-size:15px !important;
+                   font-weight:600 !important;
+                   line-height:1.7;
+                   color:{muted};
+                   {size_fix_inline}">
+          {esc(wx_line)}
+        </td>
+      </tr>
+
+      <tr><td style="height:16px;font-size:0;line-height:0;">&nbsp;</td></tr>
+
+      <tr>
+        <td style="font-family:{font};
+                   font-size:14px !important;
+                   font-weight:900 !important;
+                   letter-spacing:2px;
+                   text-transform:uppercase;
+                   color:{ink};
+                   {size_fix_inline}">
+          🌅 Sunrise / Sunset
+        </td>
+      </tr>
+      <tr><td style="height:10px;font-size:0;line-height:0;">&nbsp;</td></tr>
+      <tr>
+        <td style="font-family:{font};
+                   font-size:15px !important;
+                   font-weight:600 !important;
+                   line-height:1.7;
+                   color:{muted};
+                   {size_fix_inline}">
+          Sunrise: <span style="font-weight:900;color:{ink};">{esc(sr)}</span>
+          &nbsp;&nbsp;·&nbsp;&nbsp;
+          Sunset: <span style="font-weight:900;color:{ink};">{esc(ss)}</span>
+        </td>
+      </tr>
+
+      <tr><td style="height:16px;font-size:0;line-height:0;">&nbsp;</td></tr>
+
+      <tr>
+        <td style="font-family:{font};
+                   font-size:14px !important;
+                   font-weight:900 !important;
+                   letter-spacing:2px;
+                   text-transform:uppercase;
+                   color:{ink};
+                   {size_fix_inline}">
+          🚀 Who&#39;s in Space
+        </td>
+      </tr>
+      <tr><td style="height:10px;font-size:0;line-height:0;">&nbsp;</td></tr>
+      <tr>
+        <td style="font-family:{font};
+                   font-size:14px !important;
+                   font-weight:500 !important;
+                   line-height:1.6;
+                   color:{muted};
+                   {size_fix_inline}">
+          {space_lines}
+        </td>
+      </tr>
+
+    </table>
+    """
+
+    # Bottom stacked sections (match World Headlines formatting)
+    uk_pol_html = build_story_list(uk_pol_items, limit=3, lead_first=False)
+    rugby_html = build_story_list(rugby_items, limit=5, lead_first=False)
+    punk_html = build_story_list(punk_items, limit=3, lead_first=False)
 
     return f"""
     <html>
@@ -559,7 +715,6 @@ def build_html():
              style="border-collapse:collapse;background:{outer_bg};{size_fix_inline}">
         <tr>
           <td align="center" style="padding:18px;{size_fix_inline}">
-
             <table class="container" width="720" cellpadding="0" cellspacing="0"
                    style="border-collapse:collapse;background:{paper};border-radius:14px;overflow:hidden;{size_fix_inline}">
 
@@ -569,12 +724,12 @@ def build_html():
                   <table width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;">
                     <tr>
                       <td align="center" style="font-family:{font};
-                                                font-size:54px !important;
+                                                font-size:46px !important;
                                                 font-weight:900 !important;
                                                 color:{ink};
-                                                line-height:1.02;
+                                                line-height:1.05;
                                                 {size_fix_inline}">
-                        <span style="font-size:54px !important;font-weight:900 !important;">
+                        <span style="font-size:46px !important;font-weight:900 !important;">
                           The 2k Times
                         </span>
                       </td>
@@ -597,165 +752,49 @@ def build_html():
                 </td>
               </tr>
 
-              <!-- Single thin rule -->
+              <!-- Remove thick/extra rules; use the unified thin rule only -->
               <tr>
-                <td style="padding:0 20px 6px 20px;">
-                  <div style="height:1px;background:{rule_light};"></div>
+                <td style="padding:0 20px 12px 20px;">
+                  <div style="height:1px;background:{rule};font-size:0;line-height:0;">&nbsp;</div>
                 </td>
               </tr>
 
-              <!-- WORLD + INSIDE -->
-              {section_header("World Headlines", "🌍")}
+              <!-- WORLD -->
+              {section_heading("World Headlines", "🌍")}
 
+              <!-- Content columns -->
               <tr>
-                <td style="padding:10px 20px 18px 20px;">
+                <td style="padding:0 20px 22px 20px;">
                   <table width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;">
                     <tr>
 
-                      <td class="stack colpadR" width="56%" valign="top" style="padding-right:12px;">
+                      <!-- Left column -->
+                      <td class="stack colpadR" width="50%" valign="top" style="padding-right:12px;">
                         {world_html}
                       </td>
 
-                      <td class="divider" width="1" style="background:{rule_light};"></td>
+                      <!-- Divider -->
+                      <td class="divider" width="1" style="background:{rule};"></td>
 
-                      <td class="stack colpadL" width="44%" valign="top" style="padding-left:12px;">
-
-                        <table width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;">
-                          <tr><td style="height:18px;font-size:0;line-height:0;">&nbsp;</td></tr>
-
-                          <tr>
-                            <td style="font-family:{font};
-                                       font-size:12px !important;
-                                       font-weight:900 !important;
-                                       letter-spacing:2px;
-                                       text-transform:uppercase;
-                                       color:{ink};
-                                       {size_fix_inline}">
-                              🗞️ Inside today
-                            </td>
-                          </tr>
-
-                          <tr><td style="height:10px;font-size:0;line-height:0;">&nbsp;</td></tr>
-                          <tr><td style="height:1px;background:{rule_light};font-size:0;line-height:0;">&nbsp;</td></tr>
-                          <tr><td style="height:12px;font-size:0;line-height:0;">&nbsp;</td></tr>
-
-                          <tr>
-                            <td style="font-family:{font};
-                                       font-size:15px !important;
-                                       font-weight:600 !important;
-                                       line-height:1.9;
-                                       color:{muted};
-                                       {size_fix_inline}">
-                              • {esc(inside_counts[0])}<br/>
-                              • {esc(inside_counts[1])}<br/>
-                              • {esc(inside_counts[2])}
-                            </td>
-                          </tr>
-
-                          <tr><td style="height:14px;font-size:0;line-height:0;">&nbsp;</td></tr>
-
-                          <tr>
-                            <td style="font-family:{font};
-                                       font-size:12px !important;
-                                       font-weight:500;
-                                       line-height:1.7;
-                                       color:{muted};
-                                       {size_fix_inline}">
-                              Curated from the last 24 hours.<br/>
-                              Reader links included.
-                            </td>
-                          </tr>
-
-                          <tr><td style="height:18px;font-size:0;line-height:0;">&nbsp;</td></tr>
-                          <tr><td style="height:1px;background:{rule_light};font-size:0;line-height:0;">&nbsp;</td></tr>
-                          <tr><td style="height:16px;font-size:0;line-height:0;">&nbsp;</td></tr>
-
-                          <tr>
-                            <td style="font-family:{font};
-                                       font-size:12px !important;
-                                       font-weight:900 !important;
-                                       letter-spacing:2px;
-                                       text-transform:uppercase;
-                                       color:{ink};
-                                       {size_fix_inline}">
-                              ⛅ Weather · Cardiff
-                            </td>
-                          </tr>
-                          <tr><td style="height:10px;font-size:0;line-height:0;">&nbsp;</td></tr>
-                          <tr>
-                            <td style="font-family:{font};
-                                       font-size:15px !important;
-                                       font-weight:700 !important;
-                                       color:{ink};
-                                       line-height:1.5;
-                                       {size_fix_inline}">
-                              {esc(wx_line)}
-                            </td>
-                          </tr>
-
-                          <tr><td style="height:18px;font-size:0;line-height:0;">&nbsp;</td></tr>
-
-                          <tr>
-                            <td style="font-family:{font};
-                                       font-size:12px !important;
-                                       font-weight:900 !important;
-                                       letter-spacing:2px;
-                                       text-transform:uppercase;
-                                       color:{ink};
-                                       {size_fix_inline}">
-                              🌅 Sunrise / Sunset
-                            </td>
-                          </tr>
-                          <tr><td style="height:10px;font-size:0;line-height:0;">&nbsp;</td></tr>
-                          <tr>
-                            <td style="font-family:{font};
-                                       font-size:15px !important;
-                                       font-weight:600 !important;
-                                       color:{muted};
-                                       line-height:1.6;
-                                       {size_fix_inline}">
-                              {sunrise_html}
-                            </td>
-                          </tr>
-
-                          <tr><td style="height:18px;font-size:0;line-height:0;">&nbsp;</td></tr>
-
-                          <tr>
-                            <td style="font-family:{font};
-                                       font-size:12px !important;
-                                       font-weight:900 !important;
-                                       letter-spacing:2px;
-                                       text-transform:uppercase;
-                                       color:{ink};
-                                       {size_fix_inline}">
-                              🚀 Who&#39;s in space
-                            </td>
-                          </tr>
-                          <tr><td style="height:10px;font-size:0;line-height:0;">&nbsp;</td></tr>
-                          <tr>
-                            <td style="font-family:{font};
-                                       font-size:14px !important;
-                                       font-weight:500 !important;
-                                       color:{muted};
-                                       line-height:1.55;
-                                       {size_fix_inline}">
-                              {space_lines}
-                            </td>
-                          </tr>
-
-                          <tr><td style="height:6px;font-size:0;line-height:0;">&nbsp;</td></tr>
-                        </table>
-
+                      <!-- Right column -->
+                      <td class="stack colpadL" width="50%" valign="top" style="padding-left:12px;">
+                        {inside_today_block}
                       </td>
+
                     </tr>
                   </table>
                 </td>
               </tr>
 
               <!-- Bottom stacked sections -->
-              {uk_section_html}
-              {rugby_section_html}
-              {punk_section_html}
+              {section_heading("UK Politics", "🏛️")}
+              <tr><td style="padding:0 20px 10px 20px;">{uk_pol_html}</td></tr>
+
+              {section_heading("Rugby Union", "🏉")}
+              <tr><td style="padding:0 20px 10px 20px;">{rugby_html}</td></tr>
+
+              {section_heading("Punk Rock", "🎸")}
+              <tr><td style="padding:0 20px 10px 20px;">{punk_html}</td></tr>
 
               <!-- Footer -->
               <tr>
@@ -772,7 +811,6 @@ def build_html():
     </body>
     </html>
     """
-
 
 # ----------------------------
 # Plain text fallback
@@ -795,39 +833,48 @@ else:
         plain_lines.append(f"Read in Reader: {it['reader']}")
         plain_lines.append("")
 
-plain_lines += ["", "INSIDE TODAY", ""]
-plain_lines += [
-    f"- UK Politics: {len(uk_politics_items)}",
-    f"- Rugby Union: {len(rugby_items)}",
-    f"- Punk Rock: {len(punk_items)}",
-    "",
-]
-
-plain_lines += ["WEATHER — CARDIFF", wx_line, sunrise_plain, ""]
-
-plain_lines += ["WHO'S IN SPACE"]
-if space_people:
-    for p in space_people:
-        plain_lines.append(f"- {p['name']} ({p['craft']})")
+plain_lines += ["", "UK POLITICS", ""]
+if not uk_pol_items:
+    plain_lines.append("No stories in the last 24 hours.")
 else:
-    plain_lines.append("Space list unavailable.")
-plain_lines.append("")
-
-def add_plain_section(title, items):
-    plain_lines.append(title.upper())
-    if not items:
-        plain_lines.append("No stories in the last 24 hours.")
-        plain_lines.append("")
-        return
-    for i, it in enumerate(items, start=1):
+    for i, it in enumerate(uk_pol_items, start=1):
         plain_lines.append(f"{i}. {it['title']}")
         plain_lines.append(it["summary"])
         plain_lines.append(f"Read in Reader: {it['reader']}")
         plain_lines.append("")
 
-add_plain_section("UK Politics", uk_politics_items)
-add_plain_section("Rugby Union", rugby_items)
-add_plain_section("Punk Rock", punk_items)
+plain_lines += ["", "RUGBY UNION", ""]
+if not rugby_items:
+    plain_lines.append("No stories in the last 24 hours.")
+else:
+    for i, it in enumerate(rugby_items, start=1):
+        plain_lines.append(f"{i}. {it['title']}")
+        plain_lines.append(it["summary"])
+        plain_lines.append(f"Read in Reader: {it['reader']}")
+        plain_lines.append("")
+
+plain_lines += ["", "PUNK ROCK", ""]
+if not punk_items:
+    plain_lines.append("No stories in the last 24 hours.")
+else:
+    for i, it in enumerate(punk_items, start=1):
+        plain_lines.append(f"{i}. {it['title']}")
+        plain_lines.append(it["summary"])
+        plain_lines.append(f"Read in Reader: {it['reader']}")
+        plain_lines.append("")
+
+# Weather & space in plain text too
+plain_lines += ["", "WEATHER (Cardiff)", ""]
+plain_lines.append(wx_line)
+plain_lines += ["", "SUNRISE / SUNSET", ""]
+plain_lines.append(f"Sunrise: {sr} · Sunset: {ss}")
+
+plain_lines += ["", "WHO'S IN SPACE", ""]
+if people_in_space:
+    for p in people_in_space:
+        plain_lines.append(f"- {p['name']} ({p['craft']})")
+else:
+    plain_lines.append("No data available.")
 
 plain_body = "\n".join(plain_lines).strip() + "\n"
 
@@ -848,17 +895,14 @@ print("Sending:", subject)
 print("TEMPLATE_VERSION:", TEMPLATE_VERSION)
 print("Window (UK):", window_start.isoformat(), "→", now_uk.isoformat())
 print("World headlines:", len(world_items))
-print("UK politics:", len(uk_politics_items))
+print("UK politics:", len(uk_pol_items))
 print("Rugby:", len(rugby_items))
 print("Punk:", len(punk_items))
-print("Weather OK:", bool(wx.get("ok")))
-print("People in space:", len(space_people))
 print("SMTP:", SMTP_HOST, SMTP_PORT)
 print("Reader base:", READER_BASE_URL)
 
-context = ssl.create_default_context()
 with smtplib.SMTP(SMTP_HOST, SMTP_PORT) as server:
-    server.starttls(context=context)
+    server.starttls()
     server.login(SMTP_USER, SMTP_PASS)
     server.send_message(msg)
 
