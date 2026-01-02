@@ -1,325 +1,335 @@
 import os
 import re
 from urllib.parse import urlparse
+from datetime import datetime, timezone
 
 import requests
-from flask import Flask, request, Response
-from readability import Document
 from bs4 import BeautifulSoup
+from fastapi import FastAPI, Query
+from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse
 
-app = Flask(__name__)
+app = FastAPI()
 
-ALLOWED_DOMAINS = [d.strip().lower() for d in (os.environ.get("ALLOWED_DOMAINS", "")).split(",") if d.strip()]
-READER_BRAND = os.environ.get("READER_BRAND", "The 2k Times Reader")
+# ----------------------------
+# Allowlist (base domains)
+# ----------------------------
+DEFAULT_ALLOWED_BASES = [
+    # World / general
+    "bbc.co.uk",
+    "reuters.com",
+    "theguardian.com",
 
-USER_AGENT = os.environ.get(
-    "READER_USER_AGENT",
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
-    "(KHTML, like Gecko) Chrome/123.0 Safari/537.36",
-)
+    # Rugby sources (as requested)
+    "rugbypass.com",
+    "planetrugby.com",
+    "world.rugby",
+    "rugby365.com",
+    "rugbyworld.com",
+    "skysports.com",
+    "therugbypaper.co.uk",
+    "ruck.co.uk",
 
-TIMEOUT = int(os.environ.get("READER_TIMEOUT_SECONDS", "15"))
+    # Optional: if you end up using these
+    "thetimes.co.uk",
+    "ft.com",
+]
+
+def _env_list(name: str):
+    raw = (os.environ.get(name) or "").strip()
+    if not raw:
+        return []
+    return [x.strip().lower() for x in raw.split(",") if x.strip()]
+
+# You can override/extend these in Render via env var:
+# READER_ALLOWED_BASES="bbc.co.uk,reuters.com,theguardian.com,...."
+ALLOWED_BASES = _env_list("READER_ALLOWED_BASES") or DEFAULT_ALLOWED_BASES
 
 
 def is_allowed(url: str) -> bool:
-    if not ALLOWED_DOMAINS:
-        return True
     try:
-        host = urlparse(url).netloc.lower().split(":")[0].replace("www.", "")
-        return any(host == d or host.endswith("." + d) for d in ALLOWED_DOMAINS)
+        u = urlparse(url)
+        if u.scheme not in ("http", "https"):
+            return False
+        host = (u.hostname or "").lower()
+        if not host:
+            return False
+        # allow exact base or any subdomain of base
+        return any(host == base or host.endswith("." + base) for base in ALLOWED_BASES)
     except Exception:
         return False
 
 
-def html_escape(s: str) -> str:
-    return (
-        (s or "")
-        .replace("&", "&amp;")
-        .replace("<", "&lt;")
-        .replace(">", "&gt;")
-        .replace('"', "&quot;")
-        .replace("'", "&#39;")
-    )
+# ----------------------------
+# Fetch + readability-ish extract
+# ----------------------------
+UA = os.environ.get(
+    "READER_USER_AGENT",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/123.0 Safari/537.36"
+)
+
+TIMEOUT_SECONDS = float(os.environ.get("READER_TIMEOUT", "12"))
+MAX_CHARS = int(os.environ.get("READER_MAX_CHARS", "120000"))  # safety cap
 
 
-def sentence_split(text: str):
+def fetch_html(url: str) -> str:
+    headers = {
+        "User-Agent": UA,
+        "Accept": "text/html,application/xhtml+xml",
+        "Accept-Language": "en-GB,en;q=0.9",
+        "Cache-Control": "no-cache",
+        "Pragma": "no-cache",
+    }
+    r = requests.get(url, headers=headers, timeout=TIMEOUT_SECONDS)
+    r.raise_for_status()
+    # Avoid extreme payloads
+    text = r.text or ""
+    return text[:MAX_CHARS]
+
+
+def normalize_ws(s: str) -> str:
+    s = re.sub(r"[ \t]+", " ", s or "")
+    s = re.sub(r"\n{3,}", "\n\n", s)
+    return s.strip()
+
+
+def split_into_paragraphs(text: str):
     """
-    Simple sentence splitter that behaves reasonably for news copy.
+    Turns a blob into nicer paragraphs.
+    - Keeps blank lines
+    - Also breaks on sentence boundaries when lines are too long (fallback)
     """
-    text = re.sub(r"\s+", " ", (text or "").strip())
+    text = normalize_ws(text)
     if not text:
         return []
-    # Split on punctuation + space, but avoid splitting initials too aggressively
-    parts = re.split(r"(?<=[.!?])\s+(?=[A-Z0-9“\"'])", text)
-    return [p.strip() for p in parts if p.strip()]
 
+    # Already paragraph-ish?
+    paras = [p.strip() for p in text.split("\n\n") if p.strip()]
+    if len(paras) >= 4:
+        return paras
 
-def split_long_paragraphs(soup: BeautifulSoup, max_chars: int = 420, min_chunk_chars: int = 140):
-    """
-    If a <p> is huge, split it into multiple paragraphs at sentence boundaries.
-    """
-    for p in list(soup.find_all("p")):
-        txt = p.get_text(" ", strip=True)
-
-        # Skip short paragraphs or ones with lots of links
-        if len(txt) <= max_chars:
+    # Fallback: split by sentence groups to avoid giant single paragraph
+    sentences = re.split(r"(?<=[.!?])\s+", text)
+    out, buf = [], []
+    char_count = 0
+    for s in sentences:
+        s = s.strip()
+        if not s:
             continue
-        if len(p.find_all("a")) >= 3:
-            continue
-
-        sentences = sentence_split(txt)
-        if len(sentences) < 4:
-            continue
-
-        chunks = []
-        current = ""
-        for s in sentences:
-            if not current:
-                current = s
-            elif len(current) + 1 + len(s) <= max_chars:
-                current += " " + s
-            else:
-                chunks.append(current)
-                current = s
-        if current:
-            chunks.append(current)
-
-        # Avoid creating silly tiny paragraphs
-        merged = []
-        for c in chunks:
-            if merged and len(c) < min_chunk_chars:
-                merged[-1] = merged[-1] + " " + c
-            else:
-                merged.append(c)
-
-        # Replace original <p> with multiple <p>
-        new_ps = [soup.new_tag("p") for _ in merged]
-        for tag, c in zip(new_ps, merged):
-            tag.string = c
-
-        for new_p in reversed(new_ps):
-            p.insert_after(new_p)
-        p.decompose()
+        buf.append(s)
+        char_count += len(s) + 1
+        if char_count > 420:  # paragraph size target
+            out.append(" ".join(buf).strip())
+            buf, char_count = [], 0
+    if buf:
+        out.append(" ".join(buf).strip())
+    return out
 
 
-def clean_extracted_html(article_html: str) -> str:
-    soup = BeautifulSoup(article_html, "html.parser")
+def extract_main_text(html: str):
+    soup = BeautifulSoup(html, "html.parser")
 
-    # Remove scripts/styles
-    for tag in soup(["script", "style", "noscript"]):
+    # Title
+    title = ""
+    og = soup.find("meta", property="og:title")
+    if og and og.get("content"):
+        title = og["content"].strip()
+    if not title and soup.title and soup.title.string:
+        title = soup.title.string.strip()
+    title = title or "Reader"
+
+    # Remove junk
+    for tag in soup(["script", "style", "noscript", "svg", "canvas", "iframe", "form"]):
         tag.decompose()
 
-    # Keep basic formatting only
-    allowed = {"p", "h1", "h2", "h3", "blockquote", "ul", "ol", "li", "strong", "em", "a"}
-    for tag in soup.find_all(True):
-        if tag.name not in allowed:
-            tag.unwrap()
-        else:
-            tag.attrs = {k: v for k, v in tag.attrs.items() if k in ["href"]}
+    # Prefer article/main containers
+    container = soup.find("article") or soup.find("main") or soup.body or soup
 
-    # Ensure links open safely
-    for a in soup.find_all("a"):
-        a.attrs["rel"] = "noopener noreferrer"
-        a.attrs["target"] = "_blank"
+    # Remove typical non-content blocks inside container
+    for selector in ["header", "footer", "nav", "aside"]:
+        for t in container.find_all(selector):
+            t.decompose()
 
-    # ✅ NEW: better paragraph splitting
-    split_long_paragraphs(soup)
+    # Get text from paragraphs + headings + list items
+    chunks = []
+    for el in container.find_all(["h1", "h2", "h3", "p", "li"]):
+        txt = el.get_text(" ", strip=True)
+        txt = re.sub(r"\s+", " ", txt).strip()
+        if not txt:
+            continue
+        # Drop obvious noise
+        if len(txt) < 30 and txt.lower() in {"cookie", "cookies", "subscribe", "sign in"}:
+            continue
+        chunks.append(txt)
 
-    html = str(soup)
-    html = re.sub(r"\n{3,}", "\n\n", html).strip()
-    return html
+    # If extraction is weak, fall back to full container text
+    if len(" ".join(chunks)) < 800:
+        fallback = container.get_text("\n", strip=True)
+        chunks = [line.strip() for line in fallback.split("\n") if len(line.strip()) > 40]
 
+    text = "\n\n".join(chunks)
+    text = normalize_ws(text)
 
-def extract_readable(url: str):
-    r = requests.get(
-        url,
-        timeout=TIMEOUT,
-        headers={
-            "User-Agent": USER_AGENT,
-            "Accept": "text/html,application/xhtml+xml",
-            "Accept-Language": "en-GB,en;q=0.9",
-        },
-    )
-    r.raise_for_status()
-
-    doc = Document(r.text)
-    title = doc.short_title() or "Article"
-    content_html = doc.summary(html_partial=True)
-    content_html = clean_extracted_html(content_html)
-
-    # Fallback if too empty
-    if len(BeautifulSoup(content_html, "html.parser").get_text(" ", strip=True)) < 400:
-        soup = BeautifulSoup(r.text, "html.parser")
-        for tag in soup(["script", "style", "noscript", "header", "footer", "nav"]):
-            tag.decompose()
-        text = soup.get_text("\n", strip=True)
-        text = re.sub(r"\n{3,}", "\n\n", text)
-
-        paras = []
-        for p in text.split("\n\n"):
-            p = p.strip()
-            if len(p) < 60:
-                continue
-            paras.append(f"<p>{html_escape(p)}</p>")
-
-        # run splitting on fallback too
-        fallback_soup = BeautifulSoup("\n".join(paras[:80]), "html.parser")
-        split_long_paragraphs(fallback_soup)
-        content_html = str(fallback_soup)
-
-    return title[:160], content_html
+    # Guard against runaway pages (e.g. huge nav text)
+    text = text[:MAX_CHARS]
+    return title, text
 
 
+# ----------------------------
+# Routes
+# ----------------------------
 @app.get("/health")
 def health():
-    return {"ok": True}
+    return JSONResponse({"ok": True})
 
 
-@app.get("/read")
-def read():
-    url = request.args.get("url", "").strip()
+@app.get("/read", response_class=HTMLResponse)
+def read(url: str = Query(..., description="Article URL")):
+    url = (url or "").strip()
+
     if not url:
-        return Response("Missing ?url=", status=400)
-
-    if not (url.startswith("http://") or url.startswith("https://")):
-        return Response("URL must start with http:// or https://", status=400)
+        return PlainTextResponse("Missing url.", status_code=400)
 
     if not is_allowed(url):
-        return Response("That domain is not allowed.", status=403)
+        return PlainTextResponse("That domain is not allowed.", status_code=400)
 
     try:
-        title, body_html = extract_readable(url)
-        host = urlparse(url).netloc.replace("www.", "")
+        html = fetch_html(url)
+        title, text = extract_main_text(html)
+        paras = split_into_paragraphs(text)
 
-        html = f"""\
+        fetched_at = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+        host = (urlparse(url).hostname or "").lower()
+
+        # Build a clean “reader” page
+        page = f"""
 <!doctype html>
 <html>
 <head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>{html_escape(title)}</title>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <title>{escape_html(title)}</title>
   <style>
     :root {{
-      --bg: #0f0f10;
-      --card: #17181a;
-      --text: #f2f2f2;
-      --muted: #b9b9b9;
-      --rule: #2a2b2e;
-      --link: #8ab4ff;
-    }}
-    @media (prefers-color-scheme: light) {{
-      :root {{
-        --bg: #f6f6f7;
-        --card: #ffffff;
-        --text: #141416;
-        --muted: #5b5b5f;
-        --rule: #e7e7ea;
-        --link: #0b57d0;
-      }}
+      --bg: #0f0f0f;
+      --paper: #f7f5ef;
+      --ink: #111111;
+      --muted: #5a5a5a;
+      --rule: #d7d2c7;
+      --link: #0b57d0;
     }}
     body {{
-      margin: 0;
+      margin:0;
       background: var(--bg);
-      color: var(--text);
-      font-family: ui-serif, Georgia, "Times New Roman", Times, serif;
-      line-height: 1.75;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      color: var(--ink);
     }}
     .wrap {{
-      max-width: 860px;
-      margin: 0 auto;
-      padding: 18px;
+      max-width: 880px;
+      margin: 18px auto;
+      padding: 0 14px 30px;
     }}
-    .card {{
-      background: var(--card);
-      border: 1px solid var(--rule);
-      border-radius: 16px;
-      padding: 18px 18px 8px 18px;
+    .paper {{
+      background: var(--paper);
+      border-radius: 14px;
+      overflow: hidden;
+      box-shadow: 0 10px 40px rgba(0,0,0,.35);
     }}
-    .brand {{
-      font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
-      font-weight: 800;
-      letter-spacing: 0.5px;
-      font-size: 13px;
-      color: var(--muted);
-      margin-bottom: 10px;
+    .top {{
+      padding: 18px 18px 10px;
+      border-bottom: 1px solid var(--rule);
+    }}
+    .kicker {{
+      font-size: 12px;
+      letter-spacing: 2px;
       text-transform: uppercase;
+      color: var(--muted);
+      font-weight: 800;
     }}
     h1 {{
-      font-size: 32px;
+      margin: 10px 0 8px;
+      font-size: 28px;
       line-height: 1.15;
-      margin: 0 0 10px 0;
-      font-weight: 800;
+      font-weight: 900;
     }}
     .meta {{
-      font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
       font-size: 13px;
       color: var(--muted);
-      margin-bottom: 14px;
+      line-height: 1.4;
     }}
     .meta a {{
       color: var(--link);
       text-decoration: none;
-      border-bottom: 1px solid transparent;
+      font-weight: 700;
     }}
-    .meta a:hover {{
-      border-bottom-color: var(--link);
-    }}
-    hr {{
-      border: 0;
-      border-top: 1px solid var(--rule);
-      margin: 14px 0 16px 0;
-    }}
-    p {{
-      margin: 0 0 14px 0;
+    .content {{
+      padding: 18px;
       font-size: 18px;
+      line-height: 1.75;
     }}
-    blockquote {{
-      margin: 18px 0;
-      padding: 10px 14px;
-      border-left: 3px solid var(--rule);
-      color: var(--muted);
+    .content p {{
+      margin: 0 0 16px 0;
     }}
-    a {{
-      color: var(--link);
+    .content p:last-child {{
+      margin-bottom: 0;
     }}
-    ul, ol {{
-      margin: 0 0 14px 22px;
-      font-size: 18px;
+    .hr {{
+      height: 1px;
+      background: var(--rule);
+      margin: 14px 0;
     }}
-    .footer {{
-      margin: 18px 0 10px 0;
-      color: var(--muted);
-      font-size: 12px;
-      font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
+    @media (max-width: 640px) {{
+      h1 {{ font-size: 24px; }}
+      .content {{ font-size: 17px; }}
     }}
   </style>
 </head>
 <body>
   <div class="wrap">
-    <div class="card">
-      <div class="brand">{html_escape(READER_BRAND)}</div>
-      <h1>{html_escape(title)}</h1>
-      <div class="meta">
-        Source: <b>{html_escape(host)}</b> ·
-        <a href="{html_escape(url)}" rel="noopener noreferrer" target="_blank">Open original</a>
+    <div class="paper">
+      <div class="top">
+        <div class="kicker">The 2k Times Reader</div>
+        <h1>{escape_html(title)}</h1>
+        <div class="meta">
+          <span><strong>Source:</strong> {escape_html(host)}</span>
+          <span>·</span>
+          <span><strong>Fetched:</strong> {escape_html(fetched_at)}</span>
+          <span>·</span>
+          <a href="{escape_attr(url)}" rel="noreferrer noopener" target="_blank">Open original ↗</a>
+        </div>
       </div>
-      <hr />
-      {body_html}
-      <div class="footer">
-        Reader view generated for easier reading. If formatting looks odd, use “Open original”.
+      <div class="content">
+        {"".join(f"<p>{escape_html(p)}</p>" for p in paras) if paras else "<p>Could not extract readable text.</p>"}
       </div>
     </div>
   </div>
 </body>
 </html>
-"""
-        return Response(html, mimetype="text/html")
+        """.strip()
+
+        return HTMLResponse(page)
 
     except requests.HTTPError as e:
-        return Response(f"Fetch failed: {str(e)}", status=502)
+        return PlainTextResponse(f"Fetch failed: {str(e)}", status_code=502)
+    except requests.RequestException as e:
+        return PlainTextResponse(f"Fetch failed: {str(e)}", status_code=502)
     except Exception as e:
-        return Response(f"Error: {str(e)}", status=500)
+        return PlainTextResponse(f"Reader error: {str(e)}", status_code=500)
 
 
-if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", "10000")))
+def escape_html(s: str) -> str:
+    s = s or ""
+    return (
+        s.replace("&", "&amp;")
+         .replace("<", "&lt;")
+         .replace(">", "&gt;")
+         .replace('"', "&quot;")
+         .replace("'", "&#39;")
+    )
+
+def escape_attr(s: str) -> str:
+    # good enough for href attributes
+    return escape_html(s).replace(" ", "%20")
