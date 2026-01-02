@@ -19,7 +19,7 @@ DEFAULT_ALLOWED_BASES = [
     "reuters.com",
     "theguardian.com",
 
-    # Rugby sources (as requested)
+    # Rugby sources
     "rugbypass.com",
     "planetrugby.com",
     "world.rugby",
@@ -29,9 +29,10 @@ DEFAULT_ALLOWED_BASES = [
     "therugbypaper.co.uk",
     "ruck.co.uk",
 
-    # Optional: if you end up using these
-    "thetimes.co.uk",
-    "ft.com",
+    # Punk sources
+    "punknews.org",
+    "kerrang.com",
+    "loudwire.com",
 ]
 
 def _env_list(name: str):
@@ -40,9 +41,17 @@ def _env_list(name: str):
         return []
     return [x.strip().lower() for x in raw.split(",") if x.strip()]
 
-# You can override/extend these in Render via env var:
-# READER_ALLOWED_BASES="bbc.co.uk,reuters.com,theguardian.com,...."
+# Optional override via env:
+# READER_ALLOWED_BASES="bbc.co.uk,reuters.com,theguardian.com,..."
 ALLOWED_BASES = _env_list("READER_ALLOWED_BASES") or DEFAULT_ALLOWED_BASES
+
+UA = os.environ.get(
+    "READER_USER_AGENT",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/123.0 Safari/537.36"
+)
+TIMEOUT_SECONDS = float(os.environ.get("READER_TIMEOUT", "12"))
+MAX_CHARS = int(os.environ.get("READER_MAX_CHARS", "140000"))
 
 
 def is_allowed(url: str) -> bool:
@@ -53,23 +62,9 @@ def is_allowed(url: str) -> bool:
         host = (u.hostname or "").lower()
         if not host:
             return False
-        # allow exact base or any subdomain of base
         return any(host == base or host.endswith("." + base) for base in ALLOWED_BASES)
     except Exception:
         return False
-
-
-# ----------------------------
-# Fetch + readability-ish extract
-# ----------------------------
-UA = os.environ.get(
-    "READER_USER_AGENT",
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
-    "(KHTML, like Gecko) Chrome/123.0 Safari/537.36"
-)
-
-TIMEOUT_SECONDS = float(os.environ.get("READER_TIMEOUT", "12"))
-MAX_CHARS = int(os.environ.get("READER_MAX_CHARS", "120000"))  # safety cap
 
 
 def fetch_html(url: str) -> str:
@@ -82,9 +77,7 @@ def fetch_html(url: str) -> str:
     }
     r = requests.get(url, headers=headers, timeout=TIMEOUT_SECONDS)
     r.raise_for_status()
-    # Avoid extreme payloads
-    text = r.text or ""
-    return text[:MAX_CHARS]
+    return (r.text or "")[:MAX_CHARS]
 
 
 def normalize_ws(s: str) -> str:
@@ -94,21 +87,14 @@ def normalize_ws(s: str) -> str:
 
 
 def split_into_paragraphs(text: str):
-    """
-    Turns a blob into nicer paragraphs.
-    - Keeps blank lines
-    - Also breaks on sentence boundaries when lines are too long (fallback)
-    """
     text = normalize_ws(text)
     if not text:
         return []
 
-    # Already paragraph-ish?
     paras = [p.strip() for p in text.split("\n\n") if p.strip()]
     if len(paras) >= 4:
         return paras
 
-    # Fallback: split by sentence groups to avoid giant single paragraph
     sentences = re.split(r"(?<=[.!?])\s+", text)
     out, buf = [], []
     char_count = 0
@@ -118,7 +104,7 @@ def split_into_paragraphs(text: str):
             continue
         buf.append(s)
         char_count += len(s) + 1
-        if char_count > 420:  # paragraph size target
+        if char_count > 420:
             out.append(" ".join(buf).strip())
             buf, char_count = [], 0
     if buf:
@@ -142,42 +128,46 @@ def extract_main_text(html: str):
     for tag in soup(["script", "style", "noscript", "svg", "canvas", "iframe", "form"]):
         tag.decompose()
 
-    # Prefer article/main containers
     container = soup.find("article") or soup.find("main") or soup.body or soup
 
-    # Remove typical non-content blocks inside container
     for selector in ["header", "footer", "nav", "aside"]:
         for t in container.find_all(selector):
             t.decompose()
 
-    # Get text from paragraphs + headings + list items
     chunks = []
     for el in container.find_all(["h1", "h2", "h3", "p", "li"]):
         txt = el.get_text(" ", strip=True)
         txt = re.sub(r"\s+", " ", txt).strip()
         if not txt:
             continue
-        # Drop obvious noise
         if len(txt) < 30 and txt.lower() in {"cookie", "cookies", "subscribe", "sign in"}:
             continue
         chunks.append(txt)
 
-    # If extraction is weak, fall back to full container text
     if len(" ".join(chunks)) < 800:
         fallback = container.get_text("\n", strip=True)
         chunks = [line.strip() for line in fallback.split("\n") if len(line.strip()) > 40]
 
     text = "\n\n".join(chunks)
-    text = normalize_ws(text)
-
-    # Guard against runaway pages (e.g. huge nav text)
-    text = text[:MAX_CHARS]
+    text = normalize_ws(text)[:MAX_CHARS]
     return title, text
 
 
-# ----------------------------
-# Routes
-# ----------------------------
+def escape_html(s: str) -> str:
+    s = s or ""
+    return (
+        s.replace("&", "&amp;")
+         .replace("<", "&lt;")
+         .replace(">", "&gt;")
+         .replace('"', "&quot;")
+         .replace("'", "&#39;")
+    )
+
+
+def escape_attr(s: str) -> str:
+    return escape_html(s).replace(" ", "%20")
+
+
 @app.get("/health")
 def health():
     return JSONResponse({"ok": True})
@@ -201,7 +191,6 @@ def read(url: str = Query(..., description="Article URL")):
         fetched_at = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
         host = (urlparse(url).hostname or "").lower()
 
-        # Build a clean “reader” page
         page = f"""
 <!doctype html>
 <html>
@@ -244,7 +233,7 @@ def read(url: str = Query(..., description="Article URL")):
       letter-spacing: 2px;
       text-transform: uppercase;
       color: var(--muted);
-      font-weight: 800;
+      font-weight: 900;
     }}
     h1 {{
       margin: 10px 0 8px;
@@ -263,7 +252,7 @@ def read(url: str = Query(..., description="Article URL")):
     .meta a {{
       color: var(--link);
       text-decoration: none;
-      font-weight: 700;
+      font-weight: 800;
     }}
     .content {{
       padding: 18px;
@@ -275,11 +264,6 @@ def read(url: str = Query(..., description="Article URL")):
     }}
     .content p:last-child {{
       margin-bottom: 0;
-    }}
-    .hr {{
-      height: 1px;
-      background: var(--rule);
-      margin: 14px 0;
     }}
     @media (max-width: 640px) {{
       h1 {{ font-size: 24px; }}
@@ -318,18 +302,3 @@ def read(url: str = Query(..., description="Article URL")):
         return PlainTextResponse(f"Fetch failed: {str(e)}", status_code=502)
     except Exception as e:
         return PlainTextResponse(f"Reader error: {str(e)}", status_code=500)
-
-
-def escape_html(s: str) -> str:
-    s = s or ""
-    return (
-        s.replace("&", "&amp;")
-         .replace("<", "&lt;")
-         .replace(">", "&gt;")
-         .replace('"', "&quot;")
-         .replace("'", "&#39;")
-    )
-
-def escape_attr(s: str) -> str:
-    # good enough for href attributes
-    return escape_html(s).replace(" ", "%20")
