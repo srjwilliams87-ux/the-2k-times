@@ -1,224 +1,205 @@
 import os
-import re
-from urllib.parse import urlparse, unquote
+from urllib.parse import urlparse
 
 import requests
-from flask import Flask, request, jsonify, Response
-import trafilatura
+from flask import Flask, request, abort
+from bs4 import BeautifulSoup
+from readability import Document
+
 
 app = Flask(__name__)
 
-READER_TITLE = os.environ.get("READER_TITLE", "Reader")
+READER_BASE_URL = (os.environ.get("READER_BASE_URL", "https://the-2k-times.onrender.com") or "").rstrip("/")
 
-# Comma-separated allowlist. If empty, a safe default list is used.
-DEFAULT_ALLOWED = [
-    "bbc.co.uk", "bbc.com",
+# Allow these domains to be fetched by /read
+ALLOWED_DOMAINS = {
+    "bbc.co.uk",
+    "bbc.com",
     "reuters.com",
+    "www.reuters.com",
     "theguardian.com",
-    "rugbypass.com",
-    "planet-rugby.com",
-    "world.rugby",
-    "rugby365.com",
-    "rugbyworld.com",
-    "skysports.com",
-    "ruck.co.uk",
-    "punknews.org",
-    "kerrang.com",
-    "loudersound.com",
-    "nme.com",
-]
-ALLOWED_DOMAINS = [
-    d.strip().lower()
-    for d in (os.environ.get("ALLOWED_DOMAINS", "") or "").split(",")
-    if d.strip()
-]
-if not ALLOWED_DOMAINS:
-    ALLOWED_DOMAINS = DEFAULT_ALLOWED
+    "www.theguardian.com",
+    "independent.co.uk",
+    "www.independent.co.uk",
+}
 
 
-def _host_allowed(url: str) -> bool:
+def is_allowed(url: str) -> bool:
     try:
         host = (urlparse(url).hostname or "").lower()
     except Exception:
         return False
+
     if not host:
         return False
-    # allow subdomains of allowed domains
-    return any(host == d or host.endswith("." + d) for d in ALLOWED_DOMAINS)
+
+    # exact match or subdomain match
+    if host in ALLOWED_DOMAINS:
+        return True
+
+    for d in ALLOWED_DOMAINS:
+        if host.endswith("." + d):
+            return True
+
+    return False
 
 
-def _clean_text_to_paragraphs(text: str) -> list[str]:
-    """
-    Turn extracted text into readable paragraphs:
-    - collapse weird whitespace
-    - split on blank lines
-    - also split very long blocks on sentence boundaries lightly
-    """
-    text = (text or "").strip()
-    if not text:
-        return []
-
-    # Normalize newlines
-    text = text.replace("\r\n", "\n").replace("\r", "\n")
-
-    # Collapse 3+ newlines to 2 newlines
-    text = re.sub(r"\n{3,}", "\n\n", text)
-
-    paras = [p.strip() for p in text.split("\n\n") if p.strip()]
-    out = []
-    for p in paras:
-        # Collapse internal whitespace
-        p = re.sub(r"[ \t]+", " ", p).strip()
-
-        # If the paragraph is massive, softly split by sentence spacing.
-        if len(p) > 700:
-            parts = re.split(r"(?<=[.!?])\s+(?=[A-Z0-9“\"'])", p)
-            buf = ""
-            for part in parts:
-                if len(buf) + len(part) + 1 <= 480:
-                    buf = (buf + " " + part).strip()
-                else:
-                    if buf:
-                        out.append(buf)
-                    buf = part.strip()
-            if buf:
-                out.append(buf)
-        else:
-            out.append(p)
-
-    return out
-
-
-@app.get("/health")
-def health():
-    return jsonify({"ok": True})
+@app.get("/")
+def home():
+    return "OK"
 
 
 @app.get("/read")
 def read():
-    raw_url = request.args.get("url", "").strip()
-    if not raw_url:
-        return Response("Missing url parameter.", status=400)
-
-    # Some clients double-encode
-    url = unquote(raw_url).strip()
+    url = (request.args.get("url") or "").strip()
+    if not url:
+        abort(400, "Missing url")
 
     if not (url.startswith("http://") or url.startswith("https://")):
-        return Response("Invalid url.", status=400)
+        abort(400, "Invalid url")
 
-    if not _host_allowed(url):
-        return Response("That domain is not allowed.", status=403)
+    if not is_allowed(url):
+        return "That domain is not allowed.", 403
 
     headers = {
-        "User-Agent": (
-            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-            "AppleWebKit/537.36 (KHTML, like Gecko) "
-            "Chrome/120.0 Safari/537.36"
-        ),
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-        "Accept-Language": "en-GB,en;q=0.9",
+        "User-Agent": "Mozilla/5.0 (The 2k Times Reader)",
+        "Accept": "text/html,application/xhtml+xml",
     }
 
     try:
-        r = requests.get(url, headers=headers, timeout=25)
+        r = requests.get(url, headers=headers, timeout=20)
         r.raise_for_status()
         html = r.text
     except Exception as e:
-        return Response(f"Fetch failed: {e}", status=502)
+        return f"Fetch failed: {e}", 502
 
-    # Extract article text (much cleaner than the jina.ai markdown dumps)
-    downloaded = trafilatura.extract(
-        html,
-        include_comments=False,
-        include_tables=False,
-        include_images=False,
-        favor_recall=True,
-    )
-
-    if not downloaded:
-        # fallback: try trafilatura's URL fetcher
-        try:
-            fetched = trafilatura.fetch_url(url)
-            downloaded = trafilatura.extract(
-                fetched or "",
-                include_comments=False,
-                include_tables=False,
-                include_images=False,
-                favor_recall=True,
-            )
-        except Exception:
-            downloaded = None
-
-    title = ""
+    # Clean extraction
     try:
-        # trafilatura metadata is sometimes available
-        meta = trafilatura.metadata.extract_metadata(html)
-        if meta and meta.title:
-            title = meta.title.strip()
+        doc = Document(html)
+        title = (doc.short_title() or "").strip() or "Reader"
+        content_html = doc.summary(html_partial=True)
+
+        soup = BeautifulSoup(content_html, "html.parser")
+
+        # Remove scripts/styles
+        for tag in soup(["script", "style", "noscript"]):
+            tag.decompose()
+
+        # Trim mega nav blocks if any slipped through
+        # (Readability usually handles this, but keep safe)
+        text = soup.get_text("\n", strip=True)
+        if len(text) < 200:
+            # fallback: attempt to extract main article area from original page
+            page = BeautifulSoup(html, "html.parser")
+            main = page.find("article") or page.find("main") or page.body
+            if main:
+                for tag in main(["script", "style", "noscript"]):
+                    tag.decompose()
+                soup = BeautifulSoup(str(main), "html.parser")
+                for tag in soup(["script", "style", "noscript"]):
+                    tag.decompose()
+
+        clean_html = str(soup)
+
     except Exception:
-        title = ""
+        title = "Reader"
+        clean_html = "<p>Unable to extract article text.</p>"
 
-    paras = _clean_text_to_paragraphs(downloaded or "")
-
-    paper = "#f7f5ef"
-    ink = "#111111"
-    muted = "#4a4a4a"
-    rule = "#ddd8cc"
-    outer_bg = "#111111"
-    font = '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif'
-
-    content_html = ""
-    if paras:
-        for p in paras:
-            content_html += f"""
-              <p style="margin:0 0 14px 0; font-size:16px; line-height:1.75; color:{ink};">
-                {p.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")}
-              </p>
-            """
-    else:
-        content_html = f"""
-          <p style="margin:0; font-size:16px; line-height:1.75; color:{muted};">
-            Couldn’t extract clean article text. This source may block scraping.
-          </p>
-        """
-
-    page = f"""
-    <html>
-      <head>
-        <meta name="viewport" content="width=device-width, initial-scale=1" />
-        <title>{READER_TITLE}</title>
-      </head>
-      <body style="margin:0;background:{outer_bg};-webkit-text-size-adjust:100%;text-size-adjust:100%;">
-        <table width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;">
-          <tr>
-            <td align="center" style="padding:18px;">
-              <table width="860" cellpadding="0" cellspacing="0" style="border-collapse:collapse;background:{paper};border-radius:14px;overflow:hidden;">
-                <tr>
-                  <td style="padding:22px 20px 12px 20px;font-family:{font};">
-                    <div style="font-size:22px;font-weight:900;color:{ink};margin:0 0 6px 0;">
-                      {title if title else "Reader"}
-                    </div>
-                    <div style="font-size:12px;letter-spacing:1.5px;text-transform:uppercase;color:{muted};">
-                      Original: <a href="{url}" style="color:#0b57d0;text-decoration:none;">{url}</a>
-                    </div>
-                  </td>
-                </tr>
-
-                <tr><td style="height:1px;background:{rule};"></td></tr>
-
-                <tr>
-                  <td style="padding:18px 20px 22px 20px;font-family:{font};">
-                    {content_html}
-                  </td>
-                </tr>
-              </table>
-            </td>
-          </tr>
-        </table>
-      </body>
-    </html>
-    """
-    return Response(page, mimetype="text/html")
+    # Simple, clean styling (no raw URL printed anywhere)
+    return f"""
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{title}</title>
+  <style>
+    body {{
+      margin: 0;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      background: #111;
+      color: #eee;
+    }}
+    .wrap {{
+      max-width: 860px;
+      margin: 0 auto;
+      padding: 24px 16px 60px;
+    }}
+    .card {{
+      background: #1b1b1b;
+      border-radius: 14px;
+      padding: 26px 22px;
+      box-shadow: 0 12px 40px rgba(0,0,0,.35);
+      border: 1px solid #2a2a2a;
+    }}
+    h1 {{
+      margin: 0 0 10px;
+      font-size: 26px;
+      line-height: 1.2;
+      color: #fff;
+      font-weight: 900;
+    }}
+    .meta {{
+      margin: 0 0 18px;
+      color: #bdbdbd;
+      font-size: 13px;
+      letter-spacing: .3px;
+    }}
+    .btn {{
+      display: inline-block;
+      margin: 0 0 18px;
+      padding: 10px 14px;
+      border-radius: 10px;
+      background: #2a2a2a;
+      color: #fff;
+      text-decoration: none;
+      font-weight: 700;
+      font-size: 13px;
+    }}
+    .content {{
+      color: #e6e6e6;
+      font-size: 17px;
+      line-height: 1.75;
+    }}
+    .content a {{
+      color: #8ab4ff;
+      text-decoration: none;
+    }}
+    .content img {{
+      max-width: 100%;
+      height: auto;
+      border-radius: 10px;
+    }}
+    .content h2, .content h3 {{
+      color: #fff;
+      margin-top: 24px;
+    }}
+    .content p {{
+      margin: 14px 0;
+    }}
+    hr {{
+      border: 0;
+      height: 1px;
+      background: #2a2a2a;
+      margin: 20px 0;
+    }}
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="card">
+      <h1>{title}</h1>
+      <div class="meta">The 2k Times · Reader</div>
+      <a class="btn" href="{url}" target="_blank" rel="noopener">Open original</a>
+      <hr/>
+      <div class="content">
+        {clean_html}
+      </div>
+    </div>
+  </div>
+</body>
+</html>
+"""
 
 
 if __name__ == "__main__":
