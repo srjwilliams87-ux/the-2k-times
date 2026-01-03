@@ -1,187 +1,221 @@
 import os
 import re
-from urllib.parse import urlparse, unquote
+from urllib.parse import urlparse, quote
 
 import requests
-from flask import Flask, request, Response
-
 from bs4 import BeautifulSoup
-from readability import Document
+from flask import Flask, request, Response, jsonify
 
 app = Flask(__name__)
 
-UA = "The2kTimesReader/1.0 (+https://the-2k-times.onrender.com)"
-
+# Default allowlist (you can override with env var ALLOWED_DOMAINS, comma-separated)
 DEFAULT_ALLOWED = [
     "bbc.co.uk",
     "reuters.com",
     "theguardian.com",
-    "apnews.com",
-    "ft.com",
-    "independent.co.uk",
-    "sky.com",
-    "nme.com",
-    "pitchfork.com",
-    "kerrang.com",
-    "planetrugby.com",
-    "rugbypass.com",
-    "world.rugby",
     "rugbyworld.com",
+    "rugbypass.com",
+    "planetrugby.com",
+    "world.rugby",
+    "skysports.com",
     "ruck.co.uk",
+    "therugbypaper.co.uk",
 ]
 
-def get_allowed_domains():
-    raw = os.environ.get("ALLOWED_DOMAINS", "").strip()
-    if not raw:
-        return set(DEFAULT_ALLOWED)
-    parts = [p.strip().lower() for p in raw.split(",") if p.strip()]
-    return set(parts)
+ENV_ALLOWED = os.environ.get("ALLOWED_DOMAINS", "").strip()
+if ENV_ALLOWED:
+    ALLOWED_DOMAINS = [d.strip().lower() for d in ENV_ALLOWED.split(",") if d.strip()]
+else:
+    ALLOWED_DOMAINS = DEFAULT_ALLOWED
 
-ALLOWED = get_allowed_domains()
 
-def host_allowed(url: str) -> bool:
+def _host_allowed(url: str) -> bool:
     try:
         host = (urlparse(url).hostname or "").lower()
-        if not host:
-            return False
-        # allow subdomains
-        return any(host == d or host.endswith("." + d) for d in ALLOWED)
     except Exception:
         return False
+    if not host:
+        return False
+    return any(host == d or host.endswith("." + d) for d in ALLOWED_DOMAINS)
 
-def fetch_html(url: str) -> str:
-    r = requests.get(
-        url,
-        timeout=15,
-        headers={
-            "User-Agent": UA,
-            "Accept": "text/html,application/xhtml+xml",
-            "Accept-Language": "en-GB,en;q=0.9",
-        },
+
+def _reader_url(original_url: str) -> str:
+    # Use Jina "reader" endpoint
+    # r.jina.ai/http(s)://example.com/...
+    # Keep original scheme.
+    original_url = original_url.strip()
+    if not original_url.startswith(("http://", "https://")):
+        original_url = "https://" + original_url
+    return "https://r.jina.ai/" + original_url
+
+
+def _clean_text_to_html(text: str) -> str:
+    """
+    Convert plain-ish extracted text into readable HTML:
+    - split into paragraphs
+    - lightly format headings
+    """
+    text = (text or "").strip()
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
+
+    # Remove obvious boilerplate lines
+    lines = [ln.strip() for ln in text.split("\n")]
+    lines = [ln for ln in lines if ln]
+
+    # Build paragraphs: treat blank lines (already removed) by grouping via simple heuristics
+    paragraphs = []
+    buff = []
+
+    def flush():
+        nonlocal buff
+        if buff:
+            paragraphs.append(" ".join(buff).strip())
+            buff = []
+
+    for ln in lines:
+        # Start new paragraph on "short line" that looks like a heading
+        if len(ln) <= 60 and ln.isupper():
+            flush()
+            paragraphs.append(f"## {ln}")
+            continue
+
+        # If a line looks like a heading (title-ish)
+        if len(ln) <= 90 and re.match(r"^[A-Z0-9].{10,}$", ln) and ln.endswith((".", "!", "?", "”", '"')) is False:
+            # don't over-split: only treat as heading if it's quite short
+            if len(ln) <= 70:
+                flush()
+                paragraphs.append(f"## {ln}")
+                continue
+
+        # Otherwise accumulate into paragraph buffer
+        buff.append(ln)
+
+        # If line ends with sentence punctuation, allow paragraph breaks more naturally
+        if ln.endswith((".", "!", "?", "…", ".”", '."')):
+            if len(" ".join(buff)) > 220:
+                flush()
+
+    flush()
+
+    # Render
+    out = []
+    for p in paragraphs:
+        if p.startswith("## "):
+            out.append(f"<h2>{_esc(p[3:])}</h2>")
+        else:
+            out.append(f"<p>{_esc(p)}</p>")
+
+    return "\n".join(out)
+
+
+def _esc(s: str) -> str:
+    return (
+        (s or "")
+        .replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+        .replace('"', "&quot;")
+        .replace("'", "&#39;")
     )
-    r.raise_for_status()
-    return r.text
 
-def clean_text_from_html(html: str):
-    """
-    Use readability-lxml to extract the main content,
-    then BeautifulSoup to normalize paragraphs.
-    """
-    doc = Document(html)
-    title = doc.short_title() or "Reader"
-    content_html = doc.summary(html_partial=True)
-
-    soup = BeautifulSoup(content_html, "lxml")
-
-    # Remove junk
-    for tag in soup(["script", "style", "noscript", "svg", "form", "iframe"]):
-        tag.decompose()
-
-    # Convert <br><br> into paragraphs if any
-    # (Readability generally does <p> already, but this helps edge cases)
-    text_blocks = []
-    for p in soup.find_all(["p", "h2", "h3", "blockquote", "li"]):
-        t = " ".join(p.get_text(" ", strip=True).split())
-        if t and len(t) > 30:
-            text_blocks.append(t)
-
-    # Fallback: if no paragraphs extracted, use full text split
-    if not text_blocks:
-        raw_text = soup.get_text("\n", strip=True)
-        raw_text = re.sub(r"\n{3,}", "\n\n", raw_text)
-        chunks = [c.strip() for c in raw_text.split("\n\n") if len(c.strip()) > 40]
-        text_blocks = chunks[:80]
-
-    return title, text_blocks
 
 @app.get("/health")
 def health():
-    return {"ok": True}
+    return jsonify({"ok": True})
+
 
 @app.get("/read")
 def read():
-    url = request.args.get("url", "").strip()
-    url = unquote(url)
-
+    url = (request.args.get("url") or "").strip()
     if not url:
-        return Response("Missing url parameter.", mimetype="text/plain", status=400)
+        return Response("Missing url parameter.", status=400)
 
-    if not host_allowed(url):
-        return Response("That domain is not allowed.", mimetype="text/plain", status=403)
+    if not _host_allowed(url):
+        return Response("That domain is not allowed.", status=403)
 
     try:
-        html = fetch_html(url)
-        title, blocks = clean_text_from_html(html)
+        r = requests.get(_reader_url(url), timeout=20)
+        r.raise_for_status()
+        raw = r.text
     except Exception as e:
-        return Response(f"Fetch failed: {e}", mimetype="text/plain", status=502)
+        return Response(f"Fetch failed: {e}", status=502)
 
-    # Very clean “newspaper-ish” reader
+    # Jina returns a page containing extracted text; we’ll take body text.
+    soup = BeautifulSoup(raw, "html.parser")
+    text = soup.get_text("\n")
+    body_html = _clean_text_to_html(text)
+
     page = f"""
     <!doctype html>
     <html>
-      <head>
-        <meta name="viewport" content="width=device-width, initial-scale=1">
-        <title>{title}</title>
-        <style>
-          body {{
-            margin: 0;
-            background: #111;
-            color: #f3f3f3;
-            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-          }}
-          .wrap {{
-            max-width: 860px;
-            margin: 0 auto;
-            padding: 22px 16px 48px 16px;
-          }}
-          .card {{
-            background: #1a1a1a;
-            border: 1px solid #2a2a2a;
-            border-radius: 14px;
-            padding: 18px 16px;
-          }}
-          h1 {{
-            font-size: 28px;
-            line-height: 1.15;
-            margin: 0 0 12px 0;
-            font-weight: 900;
-          }}
-          .meta {{
-            color: #bdbdbd;
-            font-size: 13px;
-            margin-bottom: 14px;
-          }}
-          .meta a {{
-            color: #86a8ff;
-            text-decoration: none;
-            font-weight: 800;
-          }}
-          .rule {{
-            height: 1px;
-            background: #2e2e2e;
-            margin: 16px 0;
-          }}
-          p {{
-            font-size: 16px;
-            line-height: 1.8;
-            margin: 0 0 14px 0;
-            color: #e9e9e9;
-          }}
-        </style>
-      </head>
-      <body>
-        <div class="wrap">
-          <div class="card">
-            <h1>{title}</h1>
-            <div class="meta">
-              Original article: <a href="{url}">{urlparse(url).hostname}</a>
-            </div>
-            <div class="rule"></div>
-            {''.join([f"<p>{re.sub(r'\\s+', ' ', b)}</p>" for b in blocks])}
+    <head>
+      <meta charset="utf-8" />
+      <meta name="viewport" content="width=device-width, initial-scale=1" />
+      <title>Reader</title>
+      <style>
+        :root {{
+          --bg:#0f0f10;
+          --paper:#ffffff;
+          --ink:#121212;
+          --muted:#555;
+          --rule:#e5e5e5;
+          --link:#0b57d0;
+        }}
+        body {{
+          margin:0;
+          background:var(--bg);
+          font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+        }}
+        .wrap {{
+          max-width:860px;
+          margin:18px auto;
+          padding:18px;
+        }}
+        .card {{
+          background:var(--paper);
+          color:var(--ink);
+          border-radius:14px;
+          padding:22px;
+        }}
+        a {{ color: var(--link); }}
+        h1 {{
+          margin:0 0 10px 0;
+          font-size:22px;
+        }}
+        h2 {{
+          margin:22px 0 10px 0;
+          font-size:18px;
+          line-height:1.25;
+        }}
+        p {{
+          margin:0 0 14px 0;
+          font-size:16px;
+          line-height:1.75;
+        }}
+        .meta {{
+          margin:0 0 18px 0;
+          font-size:13px;
+          color:var(--muted);
+        }}
+        .rule {{
+          height:1px;
+          background:var(--rule);
+          margin:14px 0 14px 0;
+        }}
+      </style>
+    </head>
+    <body>
+      <div class="wrap">
+        <div class="card">
+          <h1>Reader</h1>
+          <div class="meta">
+            Original: <a href="{_esc(url)}">{_esc(url)}</a>
           </div>
+          <div class="rule"></div>
+          {body_html}
         </div>
-      </body>
+      </div>
+    </body>
     </html>
     """
-
     return Response(page, mimetype="text/html")
