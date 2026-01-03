@@ -1,6 +1,6 @@
 import os
 import re
-from urllib.parse import urlparse, quote
+from urllib.parse import urlparse
 
 import requests
 from bs4 import BeautifulSoup
@@ -8,7 +8,7 @@ from flask import Flask, request, Response, jsonify
 
 app = Flask(__name__)
 
-# Default allowlist (you can override with env var ALLOWED_DOMAINS, comma-separated)
+# Default allowlist (override with env var ALLOWED_DOMAINS, comma-separated)
 DEFAULT_ALLOWED = [
     "bbc.co.uk",
     "reuters.com",
@@ -20,6 +20,8 @@ DEFAULT_ALLOWED = [
     "skysports.com",
     "ruck.co.uk",
     "therugbypaper.co.uk",
+    "kerrang.com",
+    "punknews.org",
 ]
 
 ENV_ALLOWED = os.environ.get("ALLOWED_DOMAINS", "").strip()
@@ -39,73 +41,19 @@ def _host_allowed(url: str) -> bool:
     return any(host == d or host.endswith("." + d) for d in ALLOWED_DOMAINS)
 
 
+def _normalize_url(url: str) -> str:
+    url = (url or "").strip()
+    if not url:
+        return ""
+    if not url.startswith(("http://", "https://")):
+        url = "https://" + url
+    return url
+
+
 def _reader_url(original_url: str) -> str:
-    # Use Jina "reader" endpoint
-    # r.jina.ai/http(s)://example.com/...
-    # Keep original scheme.
-    original_url = original_url.strip()
-    if not original_url.startswith(("http://", "https://")):
-        original_url = "https://" + original_url
+    # Jina "reader" endpoint
+    original_url = _normalize_url(original_url)
     return "https://r.jina.ai/" + original_url
-
-
-def _clean_text_to_html(text: str) -> str:
-    """
-    Convert plain-ish extracted text into readable HTML:
-    - split into paragraphs
-    - lightly format headings
-    """
-    text = (text or "").strip()
-    text = text.replace("\r\n", "\n").replace("\r", "\n")
-
-    # Remove obvious boilerplate lines
-    lines = [ln.strip() for ln in text.split("\n")]
-    lines = [ln for ln in lines if ln]
-
-    # Build paragraphs: treat blank lines (already removed) by grouping via simple heuristics
-    paragraphs = []
-    buff = []
-
-    def flush():
-        nonlocal buff
-        if buff:
-            paragraphs.append(" ".join(buff).strip())
-            buff = []
-
-    for ln in lines:
-        # Start new paragraph on "short line" that looks like a heading
-        if len(ln) <= 60 and ln.isupper():
-            flush()
-            paragraphs.append(f"## {ln}")
-            continue
-
-        # If a line looks like a heading (title-ish)
-        if len(ln) <= 90 and re.match(r"^[A-Z0-9].{10,}$", ln) and ln.endswith((".", "!", "?", "”", '"')) is False:
-            # don't over-split: only treat as heading if it's quite short
-            if len(ln) <= 70:
-                flush()
-                paragraphs.append(f"## {ln}")
-                continue
-
-        # Otherwise accumulate into paragraph buffer
-        buff.append(ln)
-
-        # If line ends with sentence punctuation, allow paragraph breaks more naturally
-        if ln.endswith((".", "!", "?", "…", ".”", '."')):
-            if len(" ".join(buff)) > 220:
-                flush()
-
-    flush()
-
-    # Render
-    out = []
-    for p in paragraphs:
-        if p.startswith("## "):
-            out.append(f"<h2>{_esc(p[3:])}</h2>")
-        else:
-            out.append(f"<p>{_esc(p)}</p>")
-
-    return "\n".join(out)
 
 
 def _esc(s: str) -> str:
@@ -119,33 +67,80 @@ def _esc(s: str) -> str:
     )
 
 
-@app.get("/health")
-def health():
-    return jsonify({"ok": True})
+def _extract_text_from_html(html: str) -> str:
+    soup = BeautifulSoup(html or "", "html.parser")
+
+    # Remove junk
+    for tag in soup(["script", "style", "noscript", "svg", "iframe", "header", "footer", "nav"]):
+        tag.decompose()
+
+    # Prefer <article> if present
+    article = soup.find("article")
+    if article:
+        text = article.get_text("\n")
+    else:
+        # fallback: body text
+        body = soup.find("body") or soup
+        text = body.get_text("\n")
+
+    # Normalize whitespace / keep paragraphs
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
+    lines = [ln.strip() for ln in text.split("\n")]
+    lines = [ln for ln in lines if ln]
+    return "\n".join(lines)
 
 
-@app.get("/read")
-def read():
-    url = (request.args.get("url") or "").strip()
-    if not url:
-        return Response("Missing url parameter.", status=400)
+def _clean_text_to_html(text: str) -> str:
+    """
+    Convert extracted text into readable HTML:
+    - basic headings detection
+    - paragraphs
+    """
+    text = (text or "").strip()
+    if not text:
+        return "<p>Unable to extract readable text.</p>"
 
-    if not _host_allowed(url):
-        return Response("That domain is not allowed.", status=403)
+    lines = [ln.strip() for ln in text.split("\n") if ln.strip()]
 
-    try:
-        r = requests.get(_reader_url(url), timeout=20)
-        r.raise_for_status()
-        raw = r.text
-    except Exception as e:
-        return Response(f"Fetch failed: {e}", status=502)
+    paragraphs = []
+    buff = []
 
-    # Jina returns a page containing extracted text; we’ll take body text.
-    soup = BeautifulSoup(raw, "html.parser")
-    text = soup.get_text("\n")
-    body_html = _clean_text_to_html(text)
+    def flush():
+        nonlocal buff
+        if buff:
+            paragraphs.append(" ".join(buff).strip())
+            buff = []
 
-    page = f"""
+    for ln in lines:
+        # Heading-ish
+        if len(ln) <= 80 and (ln.isupper() or re.match(r"^[A-Z][A-Za-z0-9 ,:'\"’\-–—]{10,}$", ln)):
+            # Only treat as heading if it's not a normal sentence line
+            if not ln.endswith((".", "!", "?", "…")) and len(ln) <= 70:
+                flush()
+                paragraphs.append(f"## {ln}")
+                continue
+
+        buff.append(ln)
+
+        # Break up overly-long paragraphs
+        if ln.endswith((".", "!", "?", "…")) and len(" ".join(buff)) > 260:
+            flush()
+
+    flush()
+
+    out = []
+    for p in paragraphs:
+        if p.startswith("## "):
+            out.append(f"<h2>{_esc(p[3:])}</h2>")
+        else:
+            out.append(f"<p>{_esc(p)}</p>")
+
+    return "\n".join(out)
+
+
+def _render_page(original_url: str, body_html: str, note: str = "") -> str:
+    note_html = f'<div class="note">{_esc(note)}</div>' if note else ""
+    return f"""
     <!doctype html>
     <html>
     <head>
@@ -167,7 +162,7 @@ def read():
           font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
         }}
         .wrap {{
-          max-width:860px;
+          max-width:900px;
           margin:18px auto;
           padding:18px;
         }}
@@ -202,6 +197,16 @@ def read():
           background:var(--rule);
           margin:14px 0 14px 0;
         }}
+        .note {{
+          margin:0 0 14px 0;
+          padding:10px 12px;
+          background:#fff7d6;
+          border:1px solid #f1d27a;
+          border-radius:10px;
+          color:#553b00;
+          font-size:13px;
+          line-height:1.5;
+        }}
       </style>
     </head>
     <body>
@@ -209,8 +214,9 @@ def read():
         <div class="card">
           <h1>Reader</h1>
           <div class="meta">
-            Original: <a href="{_esc(url)}">{_esc(url)}</a>
+            Original: <a href="{_esc(original_url)}">{_esc(original_url)}</a>
           </div>
+          {note_html}
           <div class="rule"></div>
           {body_html}
         </div>
@@ -218,4 +224,65 @@ def read():
     </body>
     </html>
     """
-    return Response(page, mimetype="text/html")
+
+
+@app.get("/health")
+def health():
+    return jsonify({"ok": True, "allowed_domains": ALLOWED_DOMAINS})
+
+
+@app.get("/read")
+def read():
+    url = _normalize_url(request.args.get("url") or "")
+    if not url:
+        return Response("Missing url parameter.", status=400)
+
+    if not _host_allowed(url):
+        return Response("That domain is not allowed.", status=403)
+
+    headers = {
+        "User-Agent": "Mozilla/5.0 (compatible; The2kTimesReader/1.0)",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "en-GB,en;q=0.9",
+    }
+
+    # 1) Try Jina first (fast when it works)
+    note = ""
+    try:
+        r = requests.get(_reader_url(url), timeout=12, headers=headers, allow_redirects=True)
+        r.raise_for_status()
+
+        # Jina returns HTML wrapper; pull text from it
+        soup = BeautifulSoup(r.text, "html.parser")
+        text = soup.get_text("\n")
+        body_html = _clean_text_to_html(text)
+
+        page = _render_page(url, body_html)
+        return Response(page, mimetype="text/html")
+
+    except Exception as e:
+        # 2) Fallback: fetch original page directly
+        note = f"Reader fallback: Jina timed out/failed, loaded directly from source."
+
+    try:
+        r2 = requests.get(url, timeout=18, headers=headers, allow_redirects=True)
+        r2.raise_for_status()
+
+        ctype = (r2.headers.get("Content-Type") or "").lower()
+        if "text/html" not in ctype and "application/xhtml+xml" not in ctype:
+            # Not HTML (e.g., PDF). Just show link.
+            page = _render_page(
+                url,
+                f"<p>Content isn’t HTML ({_esc(ctype)}). Open the original link above.</p>",
+                note=note,
+            )
+            return Response(page, mimetype="text/html")
+
+        extracted_text = _extract_text_from_html(r2.text)
+        body_html = _clean_text_to_html(extracted_text)
+
+        page = _render_page(url, body_html, note=note)
+        return Response(page, mimetype="text/html")
+
+    except Exception as e2:
+        return Response(f"Fetch failed (both methods): {e2}", status=502)
