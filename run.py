@@ -4,15 +4,16 @@ import smtplib
 from email.message import EmailMessage
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
-from urllib.parse import unquote
+from urllib.parse import urlparse
 
-import feedparser
 import requests
+import feedparser
+from bs4 import BeautifulSoup
 
 # ----------------------------
 # DEBUG / VERSION
 # ----------------------------
-TEMPLATE_VERSION = "v-newspaper-17"
+TEMPLATE_VERSION = "v-newspaper-18"
 DEBUG_SUBJECT = True  # set False when you're happy
 
 # ----------------------------
@@ -46,8 +47,9 @@ subject = (
 )
 
 # ----------------------------
-# SOURCES
+# FEEDS
 # ----------------------------
+
 WORLD_FEEDS = [
     "https://feeds.bbci.co.uk/news/world/rss.xml",
     "https://feeds.reuters.com/Reuters/worldNews",
@@ -55,31 +57,27 @@ WORLD_FEEDS = [
 
 UK_POLITICS_FEEDS = [
     "https://feeds.bbci.co.uk/news/politics/rss.xml",
-    "https://www.theguardian.com/politics/rss",
+    "https://www.theguardian.com/uk-news/rss",
     "https://feeds.reuters.com/reuters/UKdomesticNews",
 ]
 
-RUGBY_FEEDS = [
-    "https://www.world.rugby/rss",
-    "https://www.planetrugby.com/feed",
-    "https://www.rugbypass.com/feed/",
+# Rugby Union sources requested (these may occasionally fail; we handle gracefully)
+RUGBY_UNION_FEEDS = [
     "https://feeds.bbci.co.uk/sport/rugby-union/rss.xml",
-    "https://www.rugbyworld.com/feed",
-    "https://www.ruck.co.uk/feed/",
+    "https://www.rugbypass.com/feed/",
+    "https://www.planetrugby.com/feed/",
+    "https://www.rugbyworld.com/feed/",
+    "https://www.world.rugby/rss",  # may not exist; safe to keep
 ]
 
-PUNK_FEEDS = [
-    "https://www.nme.com/music/feed",
-    "https://pitchfork.com/rss/news/",
-    "https://www.kerrang.com/rss",
+PUNK_ROCK_FEEDS = [
+    "https://www.kerrang.com/feed",
+    "https://www.punknews.org/rss.xml",
 ]
 
 # ----------------------------
 # HELPERS
 # ----------------------------
-UA = "The2kTimesBot/1.0 (+https://the-2k-times.onrender.com)"
-
-
 def reader_link(url: str) -> str:
     url = (url or "").strip()
     if not url:
@@ -112,10 +110,21 @@ def parse_time(entry):
 
 def looks_like_low_value(title: str) -> bool:
     t = (title or "").lower()
-    return any(w in t for w in ["live", "minute-by-minute", "as it happened", "watch live"])
+    return any(w in t for w in ["live", "minute-by-minute", "as it happened"])
 
 
-def collect_articles(feed_urls, limit, keyword_filter=None):
+def esc(s: str) -> str:
+    return (
+        (s or "")
+        .replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+        .replace('"', "&quot;")
+        .replace("'", "&#39;")
+    )
+
+
+def collect_articles(feed_urls, limit):
     articles = []
     for feed_url in feed_urls:
         try:
@@ -123,10 +132,7 @@ def collect_articles(feed_urls, limit, keyword_filter=None):
         except Exception:
             continue
 
-        if not getattr(feed, "entries", None):
-            continue
-
-        for e in feed.entries:
+        for e in getattr(feed, "entries", []) or []:
             title = getattr(e, "title", "").strip()
             link = getattr(e, "link", "").strip()
             if not title or not link:
@@ -139,17 +145,10 @@ def collect_articles(feed_urls, limit, keyword_filter=None):
                 continue
 
             summary_raw = getattr(e, "summary", "") or getattr(e, "description", "") or ""
-            summary = two_sentence_summary(summary_raw)
-
-            if keyword_filter:
-                hay = (title + " " + summary).lower()
-                if not any(k.lower() in hay for k in keyword_filter):
-                    continue
-
             articles.append(
                 {
                     "title": title,
-                    "summary": summary,
+                    "summary": two_sentence_summary(summary_raw),
                     "url": link,
                     "reader": reader_link(link),
                     "published": published,
@@ -170,21 +169,18 @@ def collect_articles(feed_urls, limit, keyword_filter=None):
     return unique[:limit]
 
 
-def esc(s: str) -> str:
-    return (
-        (s or "")
-        .replace("&", "&amp;")
-        .replace("<", "&lt;")
-        .replace(">", "&gt;")
-        .replace('"', "&quot;")
-        .replace("'", "&#39;")
-    )
-
-
 # ----------------------------
-# WEATHER (Cardiff) + Sunrise/Sunset
+# WEATHER + SUNRISE/SUNSET (Cardiff)
 # ----------------------------
 def get_cardiff_weather():
+    """
+    Open-Meteo (no key):
+    - current temp
+    - apparent temp ("feels like")
+    - daily high/low
+    - sunrise/sunset
+    """
+    # Cardiff coords
     lat, lon = 51.4816, -3.1791
     url = (
         "https://api.open-meteo.com/v1/forecast"
@@ -193,139 +189,144 @@ def get_cardiff_weather():
         "&daily=temperature_2m_max,temperature_2m_min,sunrise,sunset"
         "&timezone=Europe%2FLondon"
     )
-    out = {"temp": None, "feels": None, "hi": None, "lo": None, "sunrise": None, "sunset": None}
 
     try:
-        r = requests.get(url, timeout=12, headers={"User-Agent": UA})
+        r = requests.get(url, timeout=15)
         r.raise_for_status()
         data = r.json()
-
-        cur = data.get("current", {}) or {}
-        daily = data.get("daily", {}) or {}
-
-        out["temp"] = cur.get("temperature_2m")
-        out["feels"] = cur.get("apparent_temperature")
-
-        out["hi"] = (daily.get("temperature_2m_max") or [None])[0]
-        out["lo"] = (daily.get("temperature_2m_min") or [None])[0]
-
-        sunrise = (daily.get("sunrise") or [None])[0]
-        sunset = (daily.get("sunset") or [None])[0]
-
-        def _hhmm(x):
-            if not x:
-                return None
-            m = re.search(r"T(\d{2}:\d{2})", str(x))
-            return m.group(1) if m else None
-
-        out["sunrise"] = _hhmm(sunrise)
-        out["sunset"] = _hhmm(sunset)
-
     except Exception:
-        pass
+        return {
+            "ok": False,
+            "temp_c": None,
+            "feels_c": None,
+            "hi_c": None,
+            "lo_c": None,
+            "sunrise": None,
+            "sunset": None,
+        }
 
-    return out
+    try:
+        temp = data["current"]["temperature_2m"]
+        feels = data["current"]["apparent_temperature"]
+        hi = data["daily"]["temperature_2m_max"][0]
+        lo = data["daily"]["temperature_2m_min"][0]
+        sunrise = data["daily"]["sunrise"][0][-5:]  # "HH:MM"
+        sunset = data["daily"]["sunset"][0][-5:]
+        return {
+            "ok": True,
+            "temp_c": float(temp),
+            "feels_c": float(feels),
+            "hi_c": float(hi),
+            "lo_c": float(lo),
+            "sunrise": sunrise,
+            "sunset": sunset,
+        }
+    except Exception:
+        return {
+            "ok": False,
+            "temp_c": None,
+            "feels_c": None,
+            "hi_c": None,
+            "lo_c": None,
+            "sunrise": None,
+            "sunset": None,
+        }
 
 
 # ----------------------------
 # WHO'S IN SPACE (whoisinspace.com)
 # ----------------------------
 def get_people_in_space():
+    """
+    Scrape whoisinspace.com and return list of:
+      [{"name": "...", "station": "ISS"}, ...]
+    Keeps station label (ISS/Tiangong/Other) based on section headers.
+    """
+    url = "https://whoisinspace.com/"
+    try:
+        r = requests.get(url, timeout=20, headers={"User-Agent": "Mozilla/5.0 said-hi"})
+        r.raise_for_status()
+    except Exception:
+        return {"ok": False, "people": []}
+
+    soup = BeautifulSoup(r.text, "html.parser")
+
+    # The site typically uses <h2> as repeating headings.
+    h2s = soup.find_all("h2")
+    if not h2s:
+        return {"ok": False, "people": []}
+
     people = []
-    json_urls = [
-        "https://whoisinspace.com/astronauts.json",
-        "https://whoisinspace.com/people.json",
-    ]
-    for u in json_urls:
-        try:
-            r = requests.get(u, timeout=12, headers={"User-Agent": UA})
-            if r.status_code != 200:
-                continue
-            data = r.json()
+    current_station = None
 
-            cand = None
-            if isinstance(data, dict):
-                cand = data.get("people") or data.get("astronauts") or data.get("crew")
-            elif isinstance(data, list):
-                cand = data
+    def station_from_header(txt: str):
+        t = (txt or "").strip()
+        tl = t.lower()
+        # common patterns
+        if "tiangong" in tl:
+            return "Tiangong"
+        if "iss" in tl or "international space station" in tl:
+            return "ISS"
+        return None
 
-            if not cand:
-                continue
+    def is_group_header(txt: str):
+        # group headers usually mention ISS/Tiangong and often contain a dash
+        st = station_from_header(txt)
+        if not st:
+            return False
+        return ("-" in txt) or ("space station" in txt.lower()) or ("iss" in txt.lower()) or ("tiangong" in txt.lower())
 
-            for p in cand:
-                if not isinstance(p, dict):
-                    continue
-                name = p.get("name") or p.get("person") or p.get("title")
-                craft = p.get("craft") or p.get("station") or p.get("location") or p.get("spacecraft")
-                if name:
-                    people.append({"name": str(name).strip(), "craft": str(craft or "Space").strip()})
-            if people:
-                return people
-        except Exception:
+    for h in h2s:
+        txt = " ".join(h.get_text(" ", strip=True).split())
+        if not txt:
             continue
 
-    return people
+        if is_group_header(txt):
+            current_station = station_from_header(txt) or current_station
+            continue
+
+        # Otherwise treat it as a person name if it looks like a name (two words min, not too long)
+        if len(txt) > 2 and len(txt) <= 60 and any(ch.isalpha() for ch in txt) and " " in txt:
+            people.append({"name": txt, "station": current_station or "Unknown"})
+
+    # Dedup while preserving order
+    seen = set()
+    deduped = []
+    for p in people:
+        key = (p["name"].lower(), p["station"])
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(p)
+
+    return {"ok": True, "people": deduped}
 
 
 # ----------------------------
 # COLLECT CONTENT
 # ----------------------------
 world_items = collect_articles(WORLD_FEEDS, limit=3)
-uk_politics_items = collect_articles(UK_POLITICS_FEEDS, limit=5)
-rugby_items = collect_articles(
-    RUGBY_FEEDS,
-    limit=7,
-    keyword_filter=[
-        "rugby",
-        "six nations",
-        "premiership",
-        "urc",
-        "champions cup",
-        "wales",
-        "scarlets",
-        "ospreys",
-        "cardiff",
-        "dragons",
-    ],
-)
-punk_items = collect_articles(
-    PUNK_FEEDS,
-    limit=5,
-    keyword_filter=["punk", "hardcore", "post-punk", "pop-punk", "ska-punk", "tour", "album", "single"],
-)
+uk_politics_items = collect_articles(UK_POLITICS_FEEDS, limit=3)
+rugby_items = collect_articles(RUGBY_UNION_FEEDS, limit=7)
+punk_items = collect_articles(PUNK_ROCK_FEEDS, limit=3)
 
 wx = get_cardiff_weather()
-people_in_space = get_people_in_space()
+space = get_people_in_space()
 
 # ----------------------------
-# Derived display lines
-# ----------------------------
-def _fmt_temp(x):
-    if x is None:
-        return "--"
-    try:
-        return f"{float(x):.1f}".rstrip("0").rstrip(".")
-    except Exception:
-        return str(x)
-
-wx_line = f"{_fmt_temp(wx.get('temp'))}°C (feels {_fmt_temp(wx.get('feels'))}°C) · H {_fmt_temp(wx.get('hi'))}°C / L {_fmt_temp(wx.get('lo'))}°C"
-sr = wx.get("sunrise") or "--:--"
-ss = wx.get("sunset") or "--:--"
-
-# ----------------------------
-# HTML
+# HTML (Newspaper)
 # ----------------------------
 def build_html():
     outer_bg = "#111111"
-    paper = "#1a1a1a"
+    paper = "#1b1b1b"
     ink = "#ffffff"
     muted = "#cfcfcf"
-    rule = "#3a3a3a"
-    rule_light = "#2e2e2e"
-    link = "#86a8ff"
+    rule_light = "#2b2b2b"
+    link = "#78a6ff"
 
     font = '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif'
     date_line = now_uk.strftime("%d.%m.%Y")
+
     size_fix_inline = "-webkit-text-size-adjust:100%;text-size-adjust:100%;-ms-text-size-adjust:100%;"
 
     style_block = """
@@ -340,32 +341,41 @@ def build_html():
     </style>
     """
 
-    def section_label(text, emoji=""):
+    def section_header(label: str, emoji: str):
         return f"""
-        <span style="font-family:{font};
-                     font-size:14px !important;
-                     font-weight:900 !important;
-                     letter-spacing:2px;
-                     text-transform:uppercase;
-                     color:{ink};
-                     {size_fix_inline}">
-          {esc((emoji + " " if emoji else "") + text)}
-        </span>
+        <tr>
+          <td style="padding:18px 20px 12px 20px;">
+            <span style="font-family:{font};
+                         font-size:13px !important;
+                         font-weight:900 !important;
+                         letter-spacing:2px;
+                         text-transform:uppercase;
+                         color:{ink};
+                         {size_fix_inline}">
+              {esc(emoji)} {esc(label)}
+            </span>
+          </td>
+        </tr>
+        <tr>
+          <td style="padding:0 20px;">
+            <div style="height:1px;background:{rule_light};"></div>
+          </td>
+        </tr>
         """
 
-    def story_block(i, it, lead=False):
-        headline_size = "22px"
+    def story_block(i, it, lead=False, show_kicker=True):
+        headline_size = "22px" if lead else "18px"
         headline_weight = "900" if lead else "800"
-        summary_size = "15px"
-        summary_weight = "500"
-        pad_top = "18px"
-        left_bar = f"border-left:4px solid {ink};padding-left:12px;" if lead else ""
+        summary_size = "14px" if lead else "13.5px"
+        summary_weight = "500" if lead else "400"
+
+        left_bar = "border-left:4px solid %s;padding-left:12px;" % ink if lead else ""
 
         kicker_row = ""
-        if lead:
+        if lead and show_kicker:
             kicker_row = f"""
             <tr>
-              <td style="font-family:{font};font-size:12px;font-weight:900;letter-spacing:2px;
+              <td style="font-family:{font};font-size:11px;font-weight:900;letter-spacing:2px;
                          text-transform:uppercase;color:{muted};padding:0 0 8px 0;{size_fix_inline}">
                 TOP STORY
               </td>
@@ -374,8 +384,7 @@ def build_html():
 
         return f"""
         <table width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;">
-          <tr><td style="height:{pad_top};font-size:0;line-height:0;">&nbsp;</td></tr>
-
+          <tr><td style="height:16px;font-size:0;line-height:0;">&nbsp;</td></tr>
           <tr>
             <td style="{left_bar}{size_fix_inline}">
               <table width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;">
@@ -385,7 +394,7 @@ def build_html():
                   <td style="font-family:{font};
                              font-size:{headline_size} !important;
                              font-weight:{headline_weight} !important;
-                             line-height:1.18;
+                             line-height:1.2;
                              color:{ink};
                              padding:0;
                              {size_fix_inline}">
@@ -415,9 +424,10 @@ def build_html():
 
                 <tr>
                   <td style="font-family:{font};
-                             font-size:13px !important;
+                             font-size:12px !important;
                              font-weight:900 !important;
-                             letter-spacing:0.5px;
+                             letter-spacing:1px;
+                             text-transform:uppercase;
                              padding:0;
                              {size_fix_inline}">
                     <a href="{esc(it['reader'])}" style="color:{link};text-decoration:none;">
@@ -435,70 +445,46 @@ def build_html():
         </table>
         """
 
-    def stack_section(title, emoji, items, limit=3):
+    def story_list(items, limit, lead_first=True):
         if not items:
-            body = f"""
+            return f"""
             <table width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;">
-              <tr><td style="height:14px;font-size:0;line-height:0;">&nbsp;</td></tr>
               <tr>
-                <td style="font-family:{font};font-size:15px;font-weight:600;color:{muted};line-height:1.7;{size_fix_inline}">
+                <td style="padding:16px 0;font-family:{font};color:{muted};font-size:13.5px;line-height:1.7;{size_fix_inline}">
                   No stories in the last 24 hours.
                 </td>
               </tr>
-              <tr><td style="height:14px;font-size:0;line-height:0;">&nbsp;</td></tr>
               <tr><td style="height:1px;background:{rule_light};font-size:0;line-height:0;">&nbsp;</td></tr>
             </table>
             """
-        else:
-            body = ""
-            for idx, it in enumerate(items[:limit], start=1):
-                body += story_block(idx, it, lead=False)
 
-        return f"""
-        <tr>
-          <td style="padding:18px 20px 0 20px;">
-            {section_label(title, emoji)}
-          </td>
-        </tr>
-        <tr>
-          <td style="padding:10px 20px 0 20px;">
-            <div style="height:1px;background:{rule};"></div>
-          </td>
-        </tr>
-        <tr>
-          <td style="padding:0 20px 18px 20px;">
-            {body}
-          </td>
-        </tr>
-        """
+        out = ""
+        for idx, it in enumerate(items[:limit], start=1):
+            out += story_block(idx, it, lead=(lead_first and idx == 1), show_kicker=(lead_first and idx == 1))
+        return out
 
-    world_html = ""
-    if world_items:
-        for i, it in enumerate(world_items, start=1):
-            world_html += story_block(i, it, lead=(i == 1))
+    # Inside today counts
+    inside_counts = [
+        f"• UK Politics ({len(uk_politics_items)} stories)",
+        f"• Rugby Union ({len(rugby_items)} stories)",
+        f"• Punk Rock ({len(punk_items)} stories)",
+    ]
+
+    # Weather lines
+    if wx.get("ok"):
+        wx_line = f"{wx['temp_c']:.1f}°C (feels {wx['feels_c']:.1f}°C) · H {wx['hi_c']:.1f}°C / L {wx['lo_c']:.1f}°C"
+        sun_line = f"Sunrise: {wx['sunrise']}  ·  Sunset: {wx['sunset']}"
     else:
-        world_html = f"""
-        <table width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;">
-          <tr>
-            <td style="padding:18px 0;font-family:{font};color:{muted};font-size:15px;line-height:1.7;{size_fix_inline}">
-              No qualifying world headlines in the last 24 hours.
-            </td>
-          </tr>
-        </table>
-        """
+        wx_line = "Unable to load weather."
+        sun_line = "Sunrise: --:--  ·  Sunset: --:--"
 
-    inside_today_counts = f"""
-      • UK Politics ({len(uk_politics_items)} stories)<br/>
-      • Rugby Union ({len(rugby_items)} stories)<br/>
-      • Punk Rock ({len(punk_items)} stories)
-    """
-
-    if people_in_space:
-        space_lines = "<br/>".join([f"{esc(p['name'])} ({esc(p['craft'])})" for p in people_in_space])
+    # Space roster
+    if space.get("ok") and space.get("people"):
+        space_lines = "<br/>".join([f"{esc(p['name'])} ({esc(p['station'])})" for p in space["people"]])
     else:
         space_lines = "Unable to load space roster."
 
-    return f"""
+    html = f"""
     <html>
     <head>
       <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -506,158 +492,141 @@ def build_html():
     </head>
 
     <body style="margin:0;background:{outer_bg};{size_fix_inline}">
-      <table width="100%" cellpadding="0" cellspacing="0"
-             style="border-collapse:collapse;background:{outer_bg};{size_fix_inline}">
+      <table width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;background:{outer_bg};{size_fix_inline}">
         <tr>
           <td align="center" style="padding:18px;{size_fix_inline}">
             <table class="container" width="720" cellpadding="0" cellspacing="0"
                    style="border-collapse:collapse;background:{paper};border-radius:14px;overflow:hidden;{size_fix_inline}">
 
+              <!-- Masthead -->
               <tr>
-                <td align="center" style="padding:30px 20px 16px 20px;{size_fix_inline}">
-                  <table width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;">
-                    <tr>
-                      <td align="center" style="font-family:{font};
-                                                font-size:56px !important;
-                                                font-weight:900 !important;
-                                                color:{ink};
-                                                line-height:1.0;
-                                                {size_fix_inline}">
-                        <span style="font-size:56px !important;font-weight:900 !important;">
-                          The 2k Times
-                        </span>
-                      </td>
-                    </tr>
-                    <tr><td style="height:10px;font-size:0;line-height:0;">&nbsp;</td></tr>
-                    <tr>
-                      <td align="center" style="font-family:{font};
-                                                font-size:12px !important;
-                                                font-weight:800 !important;
-                                                letter-spacing:2px;
-                                                text-transform:uppercase;
-                                                color:{muted};
-                                                {size_fix_inline}">
-                        <span style="font-size:12px !important;font-weight:800 !important;">
-                          {date_line} · Daily Edition · {TEMPLATE_VERSION}
-                        </span>
-                      </td>
-                    </tr>
-                  </table>
+                <td align="center" style="padding:30px 20px 18px 20px;{size_fix_inline}">
+                  <div style="font-family:{font};font-size:60px !important;font-weight:900 !important;line-height:1.05;color:{ink};{size_fix_inline}">
+                    The 2k Times
+                  </div>
+                  <div style="margin-top:12px;font-family:{font};font-size:13px !important;font-weight:700 !important;letter-spacing:2px;text-transform:uppercase;color:{muted};{size_fix_inline}">
+                    {date_line} · Daily Edition · {TEMPLATE_VERSION}
+                  </div>
                 </td>
               </tr>
 
               <tr>
-                <td style="padding:0 20px 14px 20px;">
+                <td style="padding:0 20px 0 20px;">
                   <div style="height:1px;background:{rule_light};"></div>
                 </td>
               </tr>
 
-              <tr>
-                <td style="padding:18px 20px 10px 20px;">
-                  {section_label("World Headlines", "🌍")}
-                </td>
-              </tr>
-              <tr>
-                <td style="padding:0 20px 12px 20px;">
-                  <div style="height:1px;background:{rule};"></div>
-                </td>
-              </tr>
+              {section_header("World Headlines", "🌍")}
 
+              <!-- Two columns (World + Inside) -->
               <tr>
-                <td style="padding:6px 20px 10px 20px;">
+                <td style="padding:14px 20px 6px 20px;">
                   <table width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;">
                     <tr>
-                      <td class="stack colpadR" width="58%" valign="top" style="padding-right:14px;">
-                        {world_html}
+
+                      <!-- Left column -->
+                      <td class="stack colpadR" width="55%" valign="top" style="padding-right:14px;">
+                        {story_list(world_items, 3, lead_first=True)}
                       </td>
 
-                      <td class="divider" width="1" style="background:{rule};"></td>
+                      <td class="divider" width="1" style="background:{rule_light};"></td>
 
-                      <td class="stack colpadL" width="42%" valign="top" style="padding-left:14px;">
+                      <!-- Right column -->
+                      <td class="stack colpadL" width="45%" valign="top" style="padding-left:14px;">
+
+                        <!-- Inside Today -->
                         <table width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;">
-                          <tr><td style="height:18px;font-size:0;line-height:0;">&nbsp;</td></tr>
-
-                          <tr><td>{section_label("Inside Today", "🗞️")}</td></tr>
+                          <tr>
+                            <td style="padding-top:16px;font-family:{font};font-size:13px !important;font-weight:900 !important;letter-spacing:2px;text-transform:uppercase;color:{ink};{size_fix_inline}">
+                              🗞️ Inside Today
+                            </td>
+                          </tr>
                           <tr><td style="height:10px;font-size:0;line-height:0;">&nbsp;</td></tr>
-                          <tr><td style="height:1px;background:{rule};font-size:0;line-height:0;">&nbsp;</td></tr>
+                          <tr><td style="height:1px;background:{rule_light};font-size:0;line-height:0;">&nbsp;</td></tr>
                           <tr><td style="height:12px;font-size:0;line-height:0;">&nbsp;</td></tr>
 
                           <tr>
-                            <td style="font-family:{font};
-                                       font-size:15px !important;
-                                       font-weight:700 !important;
-                                       line-height:1.9;
-                                       color:{muted};
-                                       {size_fix_inline}">
-                              {inside_today_counts}
+                            <td style="font-family:{font};font-size:15px !important;font-weight:600 !important;line-height:1.8;color:{muted};{size_fix_inline}">
+                              {"<br/>".join([esc(x) for x in inside_counts])}
                             </td>
                           </tr>
 
-                          <tr><td style="height:14px;font-size:0;line-height:0;">&nbsp;</td></tr>
-                          <tr><td style="height:1px;background:{rule_light};font-size:0;line-height:0;">&nbsp;</td></tr>
                           <tr><td style="height:14px;font-size:0;line-height:0;">&nbsp;</td></tr>
 
                           <tr>
-                            <td style="font-family:{font};
-                                       font-size:13px !important;
-                                       font-weight:600;
-                                       line-height:1.7;
-                                       color:{muted};
-                                       {size_fix_inline}">
-                              Curated from the last 24 hours.<br/>
-                              Reader links included.
+                            <td style="font-family:{font};font-size:12px !important;font-weight:500;line-height:1.7;color:{muted};{size_fix_inline}">
+                              Curated from the last 24 hours.<br/>Reader links included.
                             </td>
                           </tr>
 
                           <tr><td style="height:18px;font-size:0;line-height:0;">&nbsp;</td></tr>
                           <tr><td style="height:1px;background:{rule_light};font-size:0;line-height:0;">&nbsp;</td></tr>
-                          <tr><td style="height:18px;font-size:0;line-height:0;">&nbsp;</td></tr>
 
-                          <tr><td>{section_label("Weather · Cardiff", "⛅")}</td></tr>
+                          <!-- Weather -->
+                          <tr>
+                            <td style="padding-top:18px;font-family:{font};font-size:13px !important;font-weight:900 !important;letter-spacing:2px;text-transform:uppercase;color:{ink};{size_fix_inline}">
+                              ⛅ Weather · Cardiff
+                            </td>
+                          </tr>
                           <tr><td style="height:10px;font-size:0;line-height:0;">&nbsp;</td></tr>
                           <tr>
-                            <td style="font-family:{font};font-size:16px;font-weight:800;color:{ink};line-height:1.5;{size_fix_inline}">
+                            <td style="font-family:{font};font-size:15px !important;font-weight:600 !important;line-height:1.8;color:{muted};{size_fix_inline}">
                               {esc(wx_line)}
                             </td>
                           </tr>
 
-                          <tr><td style="height:18px;font-size:0;line-height:0;">&nbsp;</td></tr>
-                          <tr><td>{section_label("Sunrise / Sunset", "🌅")}</td></tr>
+                          <tr><td style="height:16px;font-size:0;line-height:0;">&nbsp;</td></tr>
+
+                          <!-- Sunrise/Sunset -->
+                          <tr>
+                            <td style="font-family:{font};font-size:13px !important;font-weight:900 !important;letter-spacing:2px;text-transform:uppercase;color:{ink};{size_fix_inline}">
+                              🌅 Sunrise / Sunset
+                            </td>
+                          </tr>
                           <tr><td style="height:10px;font-size:0;line-height:0;">&nbsp;</td></tr>
                           <tr>
-                            <td style="font-family:{font};font-size:16px;font-weight:800;color:{ink};line-height:1.5;{size_fix_inline}">
-                              Sunrise: <span style="color:{ink};">{esc(sr)}</span>
-                              &nbsp;·&nbsp;
-                              Sunset: <span style="color:{ink};">{esc(ss)}</span>
+                            <td style="font-family:{font};font-size:15px !important;font-weight:600 !important;line-height:1.8;color:{muted};{size_fix_inline}">
+                              {esc(sun_line)}
                             </td>
                           </tr>
 
-                          <tr><td style="height:18px;font-size:0;line-height:0;">&nbsp;</td></tr>
-                          <tr><td>{section_label("Who's in Space", "🚀")}</td></tr>
+                          <tr><td style="height:16px;font-size:0;line-height:0;">&nbsp;</td></tr>
+
+                          <!-- Who's in Space -->
+                          <tr>
+                            <td style="font-family:{font};font-size:13px !important;font-weight:900 !important;letter-spacing:2px;text-transform:uppercase;color:{ink};{size_fix_inline}">
+                              🚀 Who&apos;s in Space
+                            </td>
+                          </tr>
                           <tr><td style="height:10px;font-size:0;line-height:0;">&nbsp;</td></tr>
                           <tr>
-                            <td style="font-family:{font};
-                                       font-size:14px !important;
-                                       font-weight:650;
-                                       line-height:1.55;
-                                       color:{muted};
-                                       {size_fix_inline}">
+                            <td style="font-family:{font};font-size:14px !important;font-weight:500 !important;line-height:1.6;color:{muted};{size_fix_inline}">
                               {space_lines}
                             </td>
                           </tr>
+
+                          <tr><td style="height:16px;font-size:0;line-height:0;">&nbsp;</td></tr>
                         </table>
+
                       </td>
                     </tr>
                   </table>
                 </td>
               </tr>
 
-              {stack_section("UK Politics", "🏛️", uk_politics_items, limit=3)}
-              {stack_section("Rugby Union", "🏉", rugby_items, limit=5)}
-              {stack_section("Punk Rock", "🎸", punk_items, limit=3)}
+              <!-- STACKED SECTIONS BELOW -->
+              {section_header("UK Politics", "🏛️")}
+              <tr><td style="padding:0 20px 8px 20px;">{story_list(uk_politics_items, 3, lead_first=False)}</td></tr>
 
+              {section_header("Rugby Union", "🏉")}
+              <tr><td style="padding:0 20px 8px 20px;">{story_list(rugby_items, 7, lead_first=False)}</td></tr>
+
+              {section_header("Punk Rock", "🎸")}
+              <tr><td style="padding:0 20px 10px 20px;">{story_list(punk_items, 3, lead_first=False)}</td></tr>
+
+              <!-- Footer -->
               <tr>
-                <td style="padding:18px;text-align:center;font-family:{font};
+                <td style="padding:16px;text-align:center;font-family:{font};
                            font-size:11px !important;color:{muted};{size_fix_inline}">
                   © The 2k Times · Delivered daily at 05:30
                 </td>
@@ -670,6 +639,8 @@ def build_html():
     </body>
     </html>
     """
+    return html
+
 
 # ----------------------------
 # Plain text fallback
@@ -679,55 +650,45 @@ plain_lines = [
     "",
     f"(Plain-text fallback) {TEMPLATE_VERSION}",
     "",
-    "WORLD HEADLINES",
-    "",
 ]
 
-if not world_items:
-    plain_lines.append("No qualifying world headlines in the last 24 hours.")
+if wx.get("ok"):
+    plain_lines += [
+        "WEATHER (CARDIFF)",
+        f"{wx['temp_c']:.1f}C (feels {wx['feels_c']:.1f}C) | H {wx['hi_c']:.1f}C / L {wx['lo_c']:.1f}C",
+        f"Sunrise {wx['sunrise']} | Sunset {wx['sunset']}",
+        "",
+    ]
 else:
-    for i, it in enumerate(world_items, start=1):
+    plain_lines += ["WEATHER (CARDIFF)", "Unable to load weather.", ""]
+
+if space.get("ok") and space.get("people"):
+    plain_lines += ["WHO'S IN SPACE"]
+    for p in space["people"]:
+        plain_lines.append(f"- {p['name']} ({p['station']})")
+    plain_lines.append("")
+else:
+    plain_lines += ["WHO'S IN SPACE", "Unable to load space roster.", ""]
+
+
+def add_plain_section(title: str, items: list, limit: int):
+    plain_lines.append(title.upper())
+    plain_lines.append("")
+    if not items:
+        plain_lines.append("No stories in the last 24 hours.")
+        plain_lines.append("")
+        return
+    for i, it in enumerate(items[:limit], start=1):
         plain_lines.append(f"{i}. {it['title']}")
         plain_lines.append(it["summary"])
         plain_lines.append(f"Read in Reader: {it['reader']}")
         plain_lines.append("")
 
-plain_lines += ["", "INSIDE TODAY", ""]
-plain_lines.append(f"UK Politics: {len(uk_politics_items)}")
-plain_lines.append(f"Rugby Union: {len(rugby_items)}")
-plain_lines.append(f"Punk Rock: {len(punk_items)}")
 
-plain_lines += ["", "WEATHER (Cardiff)", ""]
-plain_lines.append(wx_line)
-
-plain_lines += ["", "SUNRISE / SUNSET", ""]
-plain_lines.append(f"Sunrise: {sr} · Sunset: {ss}")
-
-plain_lines += ["", "WHO'S IN SPACE", ""]
-if people_in_space:
-    for p in people_in_space:
-        plain_lines.append(f"- {p['name']} ({p['craft']})")
-else:
-    plain_lines.append("Unable to load space roster.")
-
-
-def _plain_section(lines, title, items, limit):
-    # NOTE: we pass `lines` in so we never fight Python scope rules
-    lines += ["", title.upper(), ""]
-    if not items:
-        lines.append("No stories in the last 24 hours.")
-        return lines
-    for i, it in enumerate(items[:limit], start=1):
-        lines.append(f"{i}. {it['title']}")
-        lines.append(it["summary"])
-        lines.append(f"Read in Reader: {it['reader']}")
-        lines.append("")
-    return lines
-
-
-plain_lines = _plain_section(plain_lines, "UK Politics", uk_politics_items, 3)
-plain_lines = _plain_section(plain_lines, "Rugby Union", rugby_items, 5)
-plain_lines = _plain_section(plain_lines, "Punk Rock", punk_items, 3)
+add_plain_section("World Headlines", world_items, 3)
+add_plain_section("UK Politics", uk_politics_items, 3)
+add_plain_section("Rugby Union", rugby_items, 7)
+add_plain_section("Punk Rock", punk_items, 3)
 
 plain_body = "\n".join(plain_lines).strip() + "\n"
 
@@ -751,9 +712,8 @@ print("World headlines:", len(world_items))
 print("UK Politics:", len(uk_politics_items))
 print("Rugby Union:", len(rugby_items))
 print("Punk Rock:", len(punk_items))
-print("Weather line:", wx_line)
-print("Sunrise/Sunset:", sr, ss)
-print("People in space:", len(people_in_space))
+print("Weather ok:", wx.get("ok"))
+print("Space ok:", space.get("ok"), "count:", len(space.get("people") or []))
 print("SMTP:", SMTP_HOST, SMTP_PORT)
 print("Reader base:", READER_BASE_URL)
 
