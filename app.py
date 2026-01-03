@@ -1,33 +1,38 @@
 import os
 import re
-from urllib.parse import urlparse
+from urllib.parse import urlparse, unquote
 
 import requests
-from bs4 import BeautifulSoup
-from flask import Flask, request, Response, jsonify
+from flask import Flask, request, jsonify, Response
+import trafilatura
 
 app = Flask(__name__)
 
-# Default allowlist (override with env var ALLOWED_DOMAINS, comma-separated)
+READER_TITLE = os.environ.get("READER_TITLE", "Reader")
+
+# Comma-separated allowlist. If empty, a safe default list is used.
 DEFAULT_ALLOWED = [
-    "bbc.co.uk",
+    "bbc.co.uk", "bbc.com",
     "reuters.com",
     "theguardian.com",
-    "rugbyworld.com",
     "rugbypass.com",
-    "planetrugby.com",
+    "planet-rugby.com",
     "world.rugby",
+    "rugby365.com",
+    "rugbyworld.com",
     "skysports.com",
     "ruck.co.uk",
-    "therugbypaper.co.uk",
-    "kerrang.com",
     "punknews.org",
+    "kerrang.com",
+    "loudersound.com",
+    "nme.com",
 ]
-
-ENV_ALLOWED = os.environ.get("ALLOWED_DOMAINS", "").strip()
-if ENV_ALLOWED:
-    ALLOWED_DOMAINS = [d.strip().lower() for d in ENV_ALLOWED.split(",") if d.strip()]
-else:
+ALLOWED_DOMAINS = [
+    d.strip().lower()
+    for d in (os.environ.get("ALLOWED_DOMAINS", "") or "").split(",")
+    if d.strip()
+]
+if not ALLOWED_DOMAINS:
     ALLOWED_DOMAINS = DEFAULT_ALLOWED
 
 
@@ -38,251 +43,183 @@ def _host_allowed(url: str) -> bool:
         return False
     if not host:
         return False
+    # allow subdomains of allowed domains
     return any(host == d or host.endswith("." + d) for d in ALLOWED_DOMAINS)
 
 
-def _normalize_url(url: str) -> str:
-    url = (url or "").strip()
-    if not url:
-        return ""
-    if not url.startswith(("http://", "https://")):
-        url = "https://" + url
-    return url
-
-
-def _reader_url(original_url: str) -> str:
-    # Jina "reader" endpoint
-    original_url = _normalize_url(original_url)
-    return "https://r.jina.ai/" + original_url
-
-
-def _esc(s: str) -> str:
-    return (
-        (s or "")
-        .replace("&", "&amp;")
-        .replace("<", "&lt;")
-        .replace(">", "&gt;")
-        .replace('"', "&quot;")
-        .replace("'", "&#39;")
-    )
-
-
-def _extract_text_from_html(html: str) -> str:
-    soup = BeautifulSoup(html or "", "html.parser")
-
-    # Remove junk
-    for tag in soup(["script", "style", "noscript", "svg", "iframe", "header", "footer", "nav"]):
-        tag.decompose()
-
-    # Prefer <article> if present
-    article = soup.find("article")
-    if article:
-        text = article.get_text("\n")
-    else:
-        # fallback: body text
-        body = soup.find("body") or soup
-        text = body.get_text("\n")
-
-    # Normalize whitespace / keep paragraphs
-    text = text.replace("\r\n", "\n").replace("\r", "\n")
-    lines = [ln.strip() for ln in text.split("\n")]
-    lines = [ln for ln in lines if ln]
-    return "\n".join(lines)
-
-
-def _clean_text_to_html(text: str) -> str:
+def _clean_text_to_paragraphs(text: str) -> list[str]:
     """
-    Convert extracted text into readable HTML:
-    - basic headings detection
-    - paragraphs
+    Turn extracted text into readable paragraphs:
+    - collapse weird whitespace
+    - split on blank lines
+    - also split very long blocks on sentence boundaries lightly
     """
     text = (text or "").strip()
     if not text:
-        return "<p>Unable to extract readable text.</p>"
+        return []
 
-    lines = [ln.strip() for ln in text.split("\n") if ln.strip()]
+    # Normalize newlines
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
 
-    paragraphs = []
-    buff = []
+    # Collapse 3+ newlines to 2 newlines
+    text = re.sub(r"\n{3,}", "\n\n", text)
 
-    def flush():
-        nonlocal buff
-        if buff:
-            paragraphs.append(" ".join(buff).strip())
-            buff = []
-
-    for ln in lines:
-        # Heading-ish
-        if len(ln) <= 80 and (ln.isupper() or re.match(r"^[A-Z][A-Za-z0-9 ,:'\"’\-–—]{10,}$", ln)):
-            # Only treat as heading if it's not a normal sentence line
-            if not ln.endswith((".", "!", "?", "…")) and len(ln) <= 70:
-                flush()
-                paragraphs.append(f"## {ln}")
-                continue
-
-        buff.append(ln)
-
-        # Break up overly-long paragraphs
-        if ln.endswith((".", "!", "?", "…")) and len(" ".join(buff)) > 260:
-            flush()
-
-    flush()
-
+    paras = [p.strip() for p in text.split("\n\n") if p.strip()]
     out = []
-    for p in paragraphs:
-        if p.startswith("## "):
-            out.append(f"<h2>{_esc(p[3:])}</h2>")
+    for p in paras:
+        # Collapse internal whitespace
+        p = re.sub(r"[ \t]+", " ", p).strip()
+
+        # If the paragraph is massive, softly split by sentence spacing.
+        if len(p) > 700:
+            parts = re.split(r"(?<=[.!?])\s+(?=[A-Z0-9“\"'])", p)
+            buf = ""
+            for part in parts:
+                if len(buf) + len(part) + 1 <= 480:
+                    buf = (buf + " " + part).strip()
+                else:
+                    if buf:
+                        out.append(buf)
+                    buf = part.strip()
+            if buf:
+                out.append(buf)
         else:
-            out.append(f"<p>{_esc(p)}</p>")
+            out.append(p)
 
-    return "\n".join(out)
-
-
-def _render_page(original_url: str, body_html: str, note: str = "") -> str:
-    note_html = f'<div class="note">{_esc(note)}</div>' if note else ""
-    return f"""
-    <!doctype html>
-    <html>
-    <head>
-      <meta charset="utf-8" />
-      <meta name="viewport" content="width=device-width, initial-scale=1" />
-      <title>Reader</title>
-      <style>
-        :root {{
-          --bg:#0f0f10;
-          --paper:#ffffff;
-          --ink:#121212;
-          --muted:#555;
-          --rule:#e5e5e5;
-          --link:#0b57d0;
-        }}
-        body {{
-          margin:0;
-          background:var(--bg);
-          font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
-        }}
-        .wrap {{
-          max-width:900px;
-          margin:18px auto;
-          padding:18px;
-        }}
-        .card {{
-          background:var(--paper);
-          color:var(--ink);
-          border-radius:14px;
-          padding:22px;
-        }}
-        a {{ color: var(--link); }}
-        h1 {{
-          margin:0 0 10px 0;
-          font-size:22px;
-        }}
-        h2 {{
-          margin:22px 0 10px 0;
-          font-size:18px;
-          line-height:1.25;
-        }}
-        p {{
-          margin:0 0 14px 0;
-          font-size:16px;
-          line-height:1.75;
-        }}
-        .meta {{
-          margin:0 0 18px 0;
-          font-size:13px;
-          color:var(--muted);
-        }}
-        .rule {{
-          height:1px;
-          background:var(--rule);
-          margin:14px 0 14px 0;
-        }}
-        .note {{
-          margin:0 0 14px 0;
-          padding:10px 12px;
-          background:#fff7d6;
-          border:1px solid #f1d27a;
-          border-radius:10px;
-          color:#553b00;
-          font-size:13px;
-          line-height:1.5;
-        }}
-      </style>
-    </head>
-    <body>
-      <div class="wrap">
-        <div class="card">
-          <h1>Reader</h1>
-          <div class="meta">
-            Original: <a href="{_esc(original_url)}">{_esc(original_url)}</a>
-          </div>
-          {note_html}
-          <div class="rule"></div>
-          {body_html}
-        </div>
-      </div>
-    </body>
-    </html>
-    """
+    return out
 
 
 @app.get("/health")
 def health():
-    return jsonify({"ok": True, "allowed_domains": ALLOWED_DOMAINS})
+    return jsonify({"ok": True})
 
 
 @app.get("/read")
 def read():
-    url = _normalize_url(request.args.get("url") or "")
-    if not url:
+    raw_url = request.args.get("url", "").strip()
+    if not raw_url:
         return Response("Missing url parameter.", status=400)
+
+    # Some clients double-encode
+    url = unquote(raw_url).strip()
+
+    if not (url.startswith("http://") or url.startswith("https://")):
+        return Response("Invalid url.", status=400)
 
     if not _host_allowed(url):
         return Response("That domain is not allowed.", status=403)
 
     headers = {
-        "User-Agent": "Mozilla/5.0 (compatible; The2kTimesReader/1.0)",
+        "User-Agent": (
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/120.0 Safari/537.36"
+        ),
         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
         "Accept-Language": "en-GB,en;q=0.9",
     }
 
-    # 1) Try Jina first (fast when it works)
-    note = ""
     try:
-        r = requests.get(_reader_url(url), timeout=12, headers=headers, allow_redirects=True)
+        r = requests.get(url, headers=headers, timeout=25)
         r.raise_for_status()
-
-        # Jina returns HTML wrapper; pull text from it
-        soup = BeautifulSoup(r.text, "html.parser")
-        text = soup.get_text("\n")
-        body_html = _clean_text_to_html(text)
-
-        page = _render_page(url, body_html)
-        return Response(page, mimetype="text/html")
-
+        html = r.text
     except Exception as e:
-        # 2) Fallback: fetch original page directly
-        note = f"Reader fallback: Jina timed out/failed, loaded directly from source."
+        return Response(f"Fetch failed: {e}", status=502)
 
-    try:
-        r2 = requests.get(url, timeout=18, headers=headers, allow_redirects=True)
-        r2.raise_for_status()
+    # Extract article text (much cleaner than the jina.ai markdown dumps)
+    downloaded = trafilatura.extract(
+        html,
+        include_comments=False,
+        include_tables=False,
+        include_images=False,
+        favor_recall=True,
+    )
 
-        ctype = (r2.headers.get("Content-Type") or "").lower()
-        if "text/html" not in ctype and "application/xhtml+xml" not in ctype:
-            # Not HTML (e.g., PDF). Just show link.
-            page = _render_page(
-                url,
-                f"<p>Content isn’t HTML ({_esc(ctype)}). Open the original link above.</p>",
-                note=note,
+    if not downloaded:
+        # fallback: try trafilatura's URL fetcher
+        try:
+            fetched = trafilatura.fetch_url(url)
+            downloaded = trafilatura.extract(
+                fetched or "",
+                include_comments=False,
+                include_tables=False,
+                include_images=False,
+                favor_recall=True,
             )
-            return Response(page, mimetype="text/html")
+        except Exception:
+            downloaded = None
 
-        extracted_text = _extract_text_from_html(r2.text)
-        body_html = _clean_text_to_html(extracted_text)
+    title = ""
+    try:
+        # trafilatura metadata is sometimes available
+        meta = trafilatura.metadata.extract_metadata(html)
+        if meta and meta.title:
+            title = meta.title.strip()
+    except Exception:
+        title = ""
 
-        page = _render_page(url, body_html, note=note)
-        return Response(page, mimetype="text/html")
+    paras = _clean_text_to_paragraphs(downloaded or "")
 
-    except Exception as e2:
-        return Response(f"Fetch failed (both methods): {e2}", status=502)
+    paper = "#f7f5ef"
+    ink = "#111111"
+    muted = "#4a4a4a"
+    rule = "#ddd8cc"
+    outer_bg = "#111111"
+    font = '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif'
+
+    content_html = ""
+    if paras:
+        for p in paras:
+            content_html += f"""
+              <p style="margin:0 0 14px 0; font-size:16px; line-height:1.75; color:{ink};">
+                {p.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")}
+              </p>
+            """
+    else:
+        content_html = f"""
+          <p style="margin:0; font-size:16px; line-height:1.75; color:{muted};">
+            Couldn’t extract clean article text. This source may block scraping.
+          </p>
+        """
+
+    page = f"""
+    <html>
+      <head>
+        <meta name="viewport" content="width=device-width, initial-scale=1" />
+        <title>{READER_TITLE}</title>
+      </head>
+      <body style="margin:0;background:{outer_bg};-webkit-text-size-adjust:100%;text-size-adjust:100%;">
+        <table width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;">
+          <tr>
+            <td align="center" style="padding:18px;">
+              <table width="860" cellpadding="0" cellspacing="0" style="border-collapse:collapse;background:{paper};border-radius:14px;overflow:hidden;">
+                <tr>
+                  <td style="padding:22px 20px 12px 20px;font-family:{font};">
+                    <div style="font-size:22px;font-weight:900;color:{ink};margin:0 0 6px 0;">
+                      {title if title else "Reader"}
+                    </div>
+                    <div style="font-size:12px;letter-spacing:1.5px;text-transform:uppercase;color:{muted};">
+                      Original: <a href="{url}" style="color:#0b57d0;text-decoration:none;">{url}</a>
+                    </div>
+                  </td>
+                </tr>
+
+                <tr><td style="height:1px;background:{rule};"></td></tr>
+
+                <tr>
+                  <td style="padding:18px 20px 22px 20px;font-family:{font};">
+                    {content_html}
+                  </td>
+                </tr>
+              </table>
+            </td>
+          </tr>
+        </table>
+      </body>
+    </html>
+    """
+    return Response(page, mimetype="text/html")
+
+
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", "10000")))
