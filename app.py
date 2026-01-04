@@ -1,18 +1,15 @@
 import os
+import re
 from urllib.parse import urlparse
 
 import requests
+import trafilatura
 from flask import Flask, request, abort
-from bs4 import BeautifulSoup
-from readability import Document
-
 
 app = Flask(__name__)
 
-READER_BASE_URL = (os.environ.get("READER_BASE_URL", "https://the-2k-times.onrender.com") or "").rstrip("/")
-
-# Allow these domains to be fetched by /read
-ALLOWED_DOMAINS = {
+# Allow these domains in Reader
+DEFAULT_ALLOWED = {
     "bbc.co.uk",
     "bbc.com",
     "reuters.com",
@@ -23,25 +20,30 @@ ALLOWED_DOMAINS = {
     "www.independent.co.uk",
 }
 
+# Optional: extend with comma-separated list in env
+extra = os.environ.get("ALLOWED_DOMAINS", "")
+EXTRA_ALLOWED = {d.strip().lower() for d in extra.split(",") if d.strip()}
+ALLOWED_DOMAINS = DEFAULT_ALLOWED | EXTRA_ALLOWED
+
 
 def is_allowed(url: str) -> bool:
     try:
         host = (urlparse(url).hostname or "").lower()
+        if not host:
+            return False
+        # allow subdomains
+        for d in ALLOWED_DOMAINS:
+            if host == d or host.endswith("." + d):
+                return True
+        return False
     except Exception:
         return False
 
-    if not host:
-        return False
 
-    # exact match or subdomain match
-    if host in ALLOWED_DOMAINS:
-        return True
-
-    for d in ALLOWED_DOMAINS:
-        if host.endswith("." + d):
-            return True
-
-    return False
+def clean_title(t: str) -> str:
+    t = (t or "").strip()
+    t = re.sub(r"\s+", " ", t)
+    return t[:200]
 
 
 @app.get("/")
@@ -53,154 +55,167 @@ def home():
 def read():
     url = (request.args.get("url") or "").strip()
     if not url:
-        abort(400, "Missing url")
-
-    if not (url.startswith("http://") or url.startswith("https://")):
-        abort(400, "Invalid url")
+        abort(400, "Missing ?url=")
 
     if not is_allowed(url):
-        return "That domain is not allowed.", 403
+        return ("That domain is not allowed.", 403)
 
-    headers = {
-        "User-Agent": "Mozilla/5.0 (The 2k Times Reader)",
-        "Accept": "text/html,application/xhtml+xml",
-    }
-
+    # Fetch
     try:
-        r = requests.get(url, headers=headers, timeout=20)
+        r = requests.get(
+            url,
+            timeout=20,
+            headers={
+                "User-Agent": "Mozilla/5.0 (compatible; The2kTimesReader/1.0)",
+                "Accept": "text/html,application/xhtml+xml",
+            },
+        )
         r.raise_for_status()
         html = r.text
     except Exception as e:
-        return f"Fetch failed: {e}", 502
+        return (f"Fetch failed: {e}", 502)
 
-    # Clean extraction
-    try:
-        doc = Document(html)
-        title = (doc.short_title() or "").strip() or "Reader"
-        content_html = doc.summary(html_partial=True)
+    # Extract main content
+    extracted = trafilatura.extract(
+        html,
+        include_comments=False,
+        include_tables=False,
+        include_images=False,
+        output_format="txt",
+    )
 
-        soup = BeautifulSoup(content_html, "html.parser")
-
-        # Remove scripts/styles
-        for tag in soup(["script", "style", "noscript"]):
-            tag.decompose()
-
-        # Trim mega nav blocks if any slipped through
-        # (Readability usually handles this, but keep safe)
-        text = soup.get_text("\n", strip=True)
-        if len(text) < 200:
-            # fallback: attempt to extract main article area from original page
-            page = BeautifulSoup(html, "html.parser")
-            main = page.find("article") or page.find("main") or page.body
-            if main:
-                for tag in main(["script", "style", "noscript"]):
-                    tag.decompose()
-                soup = BeautifulSoup(str(main), "html.parser")
-                for tag in soup(["script", "style", "noscript"]):
-                    tag.decompose()
-
-        clean_html = str(soup)
-
-    except Exception:
+    # Try to also grab title
+    downloaded = trafilatura.extract_metadata(html)
+    title = clean_title(downloaded.title if downloaded and downloaded.title else "")
+    if not title:
         title = "Reader"
-        clean_html = "<p>Unable to extract article text.</p>"
 
-    # Simple, clean styling (no raw URL printed anywhere)
-    return f"""
-<!doctype html>
-<html>
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>{title}</title>
-  <style>
-    body {{
-      margin: 0;
-      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-      background: #111;
-      color: #eee;
-    }}
-    .wrap {{
-      max-width: 860px;
-      margin: 0 auto;
-      padding: 24px 16px 60px;
-    }}
-    .card {{
-      background: #1b1b1b;
-      border-radius: 14px;
-      padding: 26px 22px;
-      box-shadow: 0 12px 40px rgba(0,0,0,.35);
-      border: 1px solid #2a2a2a;
-    }}
-    h1 {{
-      margin: 0 0 10px;
-      font-size: 26px;
-      line-height: 1.2;
-      color: #fff;
-      font-weight: 900;
-    }}
-    .meta {{
-      margin: 0 0 18px;
-      color: #bdbdbd;
-      font-size: 13px;
-      letter-spacing: .3px;
-    }}
-    .btn {{
-      display: inline-block;
-      margin: 0 0 18px;
-      padding: 10px 14px;
-      border-radius: 10px;
-      background: #2a2a2a;
-      color: #fff;
-      text-decoration: none;
-      font-weight: 700;
-      font-size: 13px;
-    }}
-    .content {{
-      color: #e6e6e6;
-      font-size: 17px;
-      line-height: 1.75;
-    }}
-    .content a {{
-      color: #8ab4ff;
-      text-decoration: none;
-    }}
-    .content img {{
-      max-width: 100%;
-      height: auto;
-      border-radius: 10px;
-    }}
-    .content h2, .content h3 {{
-      color: #fff;
-      margin-top: 24px;
-    }}
-    .content p {{
-      margin: 14px 0;
-    }}
-    hr {{
-      border: 0;
-      height: 1px;
-      background: #2a2a2a;
-      margin: 20px 0;
-    }}
-  </style>
-</head>
-<body>
-  <div class="wrap">
-    <div class="card">
-      <h1>{title}</h1>
-      <div class="meta">The 2k Times · Reader</div>
-      <a class="btn" href="{url}" target="_blank" rel="noopener">Open original</a>
-      <hr/>
-      <div class="content">
-        {clean_html}
+    # Convert extracted text to paragraphs
+    if not extracted:
+        body_html = "<p>Sorry — I couldn’t extract the article text.</p>"
+    else:
+        paras = [p.strip() for p in extracted.split("\n") if p.strip()]
+        # Keep it readable: remove ultra-short noise lines
+        paras = [p for p in paras if len(p) > 25]
+        body_html = "\n".join([f"<p>{escape_html(p)}</p>" for p in paras[:80]])
+
+    source = source_name(url)
+
+    # Clean Reader page (no full URL printed)
+    page = f"""
+    <!doctype html>
+    <html>
+    <head>
+      <meta charset="utf-8" />
+      <meta name="viewport" content="width=device-width, initial-scale=1" />
+      <title>{escape_html(title)}</title>
+      <style>
+        body {{
+          margin: 0;
+          background: #111;
+          font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+          color: #111;
+        }}
+        .wrap {{
+          max-width: 820px;
+          margin: 28px auto;
+          padding: 0 16px;
+        }}
+        .card {{
+          background: #f7f5ef;
+          border-radius: 14px;
+          padding: 22px 22px;
+          box-shadow: 0 10px 30px rgba(0,0,0,0.35);
+        }}
+        h1 {{
+          margin: 0 0 6px 0;
+          font-size: 22px;
+          line-height: 1.2;
+        }}
+        .meta {{
+          color: #4a4a4a;
+          font-size: 12px;
+          font-weight: 700;
+          letter-spacing: 1px;
+          text-transform: uppercase;
+          margin-bottom: 16px;
+        }}
+        p {{
+          margin: 0 0 14px 0;
+          color: #222;
+          line-height: 1.75;
+          font-size: 15px;
+        }}
+        .actions {{
+          margin-top: 18px;
+          padding-top: 14px;
+          border-top: 1px solid #ddd8cc;
+          display: flex;
+          gap: 12px;
+          flex-wrap: wrap;
+        }}
+        a.button {{
+          display: inline-block;
+          background: #0b57d0;
+          color: #fff;
+          text-decoration: none;
+          padding: 10px 12px;
+          border-radius: 10px;
+          font-weight: 800;
+          letter-spacing: .5px;
+          font-size: 13px;
+        }}
+        a.ghost {{
+          display: inline-block;
+          color: #0b57d0;
+          text-decoration: none;
+          padding: 10px 0;
+          font-weight: 800;
+          font-size: 13px;
+        }}
+      </style>
+    </head>
+    <body>
+      <div class="wrap">
+        <div class="card">
+          <h1>{escape_html(title)}</h1>
+          <div class="meta">{escape_html(source)}</div>
+          {body_html}
+          <div class="actions">
+            <a class="button" href="{escape_attr(url)}" target="_blank" rel="noopener noreferrer">Open original</a>
+            <a class="ghost" href="javascript:history.back()">← Back</a>
+          </div>
+        </div>
       </div>
-    </div>
-  </div>
-</body>
-</html>
-"""
+    </body>
+    </html>
+    """
+    return page
 
 
-if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", "10000")))
+def source_name(url: str) -> str:
+    host = (urlparse(url).hostname or "").lower()
+    if "bbc" in host:
+        return "BBC"
+    if "reuters" in host:
+        return "Reuters"
+    if "theguardian" in host or host.endswith("guardian.com"):
+        return "The Guardian"
+    if "independent" in host:
+        return "The Independent"
+    return host
+
+
+def escape_html(s: str) -> str:
+    return (
+        (s or "")
+        .replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+        .replace('"', "&quot;")
+        .replace("'", "&#39;")
+    )
+
+
+def escape_attr(s: str) -> str:
+    return escape_html(s)
