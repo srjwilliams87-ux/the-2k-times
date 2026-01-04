@@ -153,30 +153,128 @@ def collect_articles(feed_urls, source_key, limit=12):
 
     return unique[:limit]
 
+STOPWORDS = {
+    "the","a","an","and","or","but","if","then","else","when","while","as","of","to","in","on","for","with","by",
+    "from","at","into","over","after","before","under","against","between","without","within","about","this","that",
+    "these","those","it","its","they","their","them","he","she","his","her","you","we","our","us","is","are","was",
+    "were","be","been","being","will","would","can","could","should","may","might","must","do","does","did","done",
+    "says","said","say","new","latest","live","update","updates"
+}
+
+def _tokens(text: str):
+    text = (text or "").lower()
+    text = re.sub(r"[^a-z0-9\s\-]", " ", text)
+    parts = re.split(r"\s+", text)
+    toks = []
+    for p in parts:
+        if not p or len(p) < 3:
+            continue
+        if p in STOPWORDS:
+            continue
+        toks.append(p)
+    return toks
+
+def jaccard(a: set, b: set) -> float:
+    if not a or not b:
+        return 0.0
+    inter = len(a & b)
+    union = len(a | b)
+    return inter / union if union else 0.0
+
+def keyphrases(text: str):
+    """
+    Lightweight 'topic' extraction: keeps bigrams + notable single tokens.
+    Helps catch: 'maduro venezuela', 'swiss fire', 'ukraine strike' etc.
+    """
+    toks = _tokens(text)
+    singles = {t for t in toks if len(t) >= 4}
+    bigrams = set()
+    for i in range(len(toks) - 1):
+        a, b = toks[i], toks[i+1]
+        if a in STOPWORDS or b in STOPWORDS:
+            continue
+        bigrams.add(f"{a}_{b}")
+    return singles | bigrams
+
+def too_similar(candidate, chosen_items) -> bool:
+    """
+    Returns True if candidate is a near-duplicate of anything already chosen.
+    """
+    cand_text = f"{candidate.get('title','')} {candidate.get('summary','')}"
+    cand_tokens = set(_tokens(cand_text))
+    cand_keys = keyphrases(cand_text)
+
+    for it in chosen_items:
+        it_text = f"{it.get('title','')} {it.get('summary','')}"
+        it_tokens = set(_tokens(it_text))
+        it_keys = keyphrases(it_text)
+
+        # Similar title/summary wording
+        jac = jaccard(cand_tokens, it_tokens)
+
+        # Same 'topic' phrases even if wording differs
+        key_jac = jaccard(cand_keys, it_keys)
+
+        # Tune thresholds here:
+        # - jac catches near-paraphrases
+        # - key_jac catches same event described differently
+        if jac >= 0.42 or key_jac >= 0.28:
+            return True
+
+    return False
 
 def pick_three_distinct_sources(source_lists):
     """
-    source_lists: dict key -> list[article] sorted newest->oldest
-    Picks 3 articles total ensuring 3 distinct sources, choosing overall newest available.
+    Picks 3 items total, preferring:
+      1) three distinct sources
+      2) non-duplicated topics (near-duplicate filter)
+      3) newest-first
+
+    If it's impossible to get 3 distinct sources without duplication,
+    we relax the source constraint BEFORE allowing topic duplication.
     """
+    # pointers into each source list
     pointers = {k: 0 for k in source_lists.keys()}
+
     chosen = []
     used_sources = set()
 
+    def next_candidate_for_source(k):
+        items = source_lists.get(k, [])
+        idx = pointers.get(k, 0)
+        while idx < len(items):
+            cand = items[idx]
+            idx += 1
+            pointers[k] = idx
+            # Reject near-duplicates
+            if too_similar(cand, chosen):
+                continue
+            return cand
+        return None
+
+    # PASS 1: try to get 3 items from 3 distinct sources (no duplicates)
     while len(chosen) < 3:
         best = None
         best_key = None
 
-        for k, items in source_lists.items():
+        for k in source_lists.keys():
             if k in used_sources:
                 continue
-            idx = pointers.get(k, 0)
-            if idx >= len(items):
+            cand = next_candidate_for_source(k)
+            if not cand:
                 continue
-            cand = items[idx]
+
+            # we advanced pointer; if not chosen, we need to hold it.
+            # simplest: compare and keep best, and if not selected, we store it back by rewinding one step
             if best is None or cand["published"] > best["published"]:
+                # rewind previous best if existed (since we consumed one)
+                if best_key is not None:
+                    pointers[best_key] -= 1
                 best = cand
                 best_key = k
+            else:
+                # rewind because not selected
+                pointers[k] -= 1
 
         if best is None:
             break
@@ -184,22 +282,39 @@ def pick_three_distinct_sources(source_lists):
         chosen.append(best)
         used_sources.add(best_key)
 
-    # If we still don't have 3 (rare), allow filling from remaining regardless of source uniqueness
+    # PASS 2: if still fewer than 3, relax source constraint but STILL forbid duplicates
+    if len(chosen) < 3:
+        # Build a merged list newest-first, skipping duplicates
+        flat = []
+        for k, items in source_lists.items():
+            flat.extend(items)
+        flat.sort(key=lambda x: x["published"], reverse=True)
+
+        for cand in flat:
+            if len(chosen) >= 3:
+                break
+            if too_similar(cand, chosen):
+                continue
+            # also avoid exact same title
+            if any(cand["title"].lower() == c["title"].lower() for c in chosen):
+                continue
+            chosen.append(cand)
+
+    # LAST RESORT: if still fewer than 3 (very rare), allow anything newest-first
     if len(chosen) < 3:
         flat = []
         for k, items in source_lists.items():
             flat.extend(items)
         flat.sort(key=lambda x: x["published"], reverse=True)
-        seen_titles = {c["title"].lower() for c in chosen}
-        for a in flat:
+        for cand in flat:
             if len(chosen) >= 3:
                 break
-            if a["title"].lower() in seen_titles:
+            if any(cand["title"].lower() == c["title"].lower() for c in chosen):
                 continue
-            chosen.append(a)
-            seen_titles.add(a["title"].lower())
+            chosen.append(cand)
 
     return chosen[:3]
+
 
 
 def esc(s: str) -> str:
