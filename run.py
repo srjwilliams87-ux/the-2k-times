@@ -1,3 +1,5 @@
+print(">>> run.py starting")
+
 import os
 import sys
 import requests
@@ -311,3 +313,5 @@ def main():
             print("Email failed (continuing — cron safe).")
     else:
         print("SEND_EMAIL=false — skipping send")
+
+print(">>> run.py finished")
