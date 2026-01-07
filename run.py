@@ -172,29 +172,124 @@ def render_email(world_stories):
 # Mailgun
 # --------------------------------------------------
 
-def send_mailgun(subject, html):
-    if not SEND_EMAIL:
-        print("SEND_EMAIL=false — skipping send")
-        return
+import os
+import re
+import requests
 
-    url = f"https://api.mailgun.net/v3/{MAILGUN_DOMAIN}/messages"
-    auth = ("api", MAILGUN_API_KEY)
+def _bool_env(name: str, default: bool = False) -> bool:
+    v = os.getenv(name, "")
+    if v == "":
+        return default
+    return v.strip().lower() in ("1", "true", "yes", "y", "on")
 
-    resp = requests.post(
-        url,
-        auth=auth,
-        data={
-            "from": f"{EMAIL_FROM_NAME} <postmaster@{MAILGUN_DOMAIN}>",
-            "to": EMAIL_TO,
-            "subject": subject,
-            "html": html,
-            "h:Date": formatdate(localtime=False),
-        },
-        timeout=15,
-    )
+def _clean_base_url(url: str) -> str:
+    url = (url or "").strip()
+    if not url:
+        return "https://api.mailgun.net"
+    return url.rstrip("/")
 
-    if resp.status_code != 200:
-        raise RuntimeError(f"Mailgun send failed: {resp.status_code} {resp.text}")
+def _format_from_header(from_name: str, from_email: str) -> str:
+    """
+    Returns a valid RFC-ish From header.
+    If name is blank, returns the email only.
+    """
+    from_name = (from_name or "").strip()
+    from_email = (from_email or "").strip()
+    if not from_name:
+        return from_email
+    # Quote if contains special chars
+    if re.search(r'[",<>@]', from_name):
+        from_name = from_name.replace('"', '\\"')
+        return f"\"{from_name}\" <{from_email}>"
+    return f"{from_name} <{from_email}>"
+
+def send_mailgun(subject: str, html: str, text: str | None = None) -> bool:
+    """
+    Known-good Mailgun API sender using env vars:
+      EMAIL_TO
+      EMAIL_FROM_NAME
+      EMAIL_FROM
+      MAILGUN_API_BASE_URL
+      MAILGUN_API_KEY
+      MAILGUN_DOMAIN
+      DEBUG_EMAIL
+      SEND_EMAIL
+
+    Returns True on success, False on failure.
+    Never raises unless requests itself explodes unexpectedly.
+    """
+    send_enabled = _bool_env("SEND_EMAIL", default=False)
+    debug_enabled = _bool_env("DEBUG_EMAIL", default=False)
+
+    email_to = (os.getenv("EMAIL_TO") or "").strip()
+    from_name = (os.getenv("EMAIL_FROM_NAME") or "").strip()
+    from_email = (os.getenv("EMAIL_FROM") or "").strip()
+
+    api_key = (os.getenv("MAILGUN_API_KEY") or "").strip()
+    mg_domain = (os.getenv("MAILGUN_DOMAIN") or "").strip()
+    base_url = _clean_base_url(os.getenv("MAILGUN_API_BASE_URL"))
+
+    if not send_enabled:
+        print("SEND_EMAIL=false - skipping send")
+        return True  # not an error, just skipped
+
+    # Basic env validation
+    missing = []
+    if not email_to: missing.append("EMAIL_TO")
+    if not from_email: missing.append("EMAIL_FROM")
+    if not api_key: missing.append("MAILGUN_API_KEY")
+    if not mg_domain: missing.append("MAILGUN_DOMAIN")
+    if missing:
+        print(f"Mailgun: missing env vars: {', '.join(missing)}")
+        return False
+
+    # Sandbox domains are strict about From; this keeps you safe.
+    # If EMAIL_FROM isn't on the same domain, force postmaster@<domain>.
+    # (This avoids Mailgun rejecting with forbidden / unauthorized sender.)
+    if "sandbox" in mg_domain and not from_email.lower().endswith("@" + mg_domain.lower()):
+        print(f"Mailgun: sandbox domain detected; forcing EMAIL_FROM to postmaster@{mg_domain}")
+        from_email = f"postmaster@{mg_domain}"
+
+    from_header = _format_from_header(from_name, from_email)
+
+    endpoint = f"{base_url}/v3/{mg_domain}/messages"
+
+    data = {
+        "from": from_header,
+        "to": [email_to],
+        "subject": subject,
+        "html": html,
+    }
+    if text:
+        data["text"] = text
+
+    if debug_enabled:
+        print("Mailgun DEBUG:")
+        print(f"  endpoint: {endpoint}")
+        print(f"  from: {from_header}")
+        print(f"  to: {email_to}")
+        print(f"  subject: {subject}")
+
+    try:
+        resp = requests.post(
+            endpoint,
+            auth=("api", api_key),
+            data=data,
+            timeout=20,
+        )
+    except Exception as e:
+        print(f"Mailgun send exception: {type(e).__name__}: {e}")
+        return False
+
+    if 200 <= resp.status_code < 300:
+        if debug_enabled:
+            print(f"Mailgun OK: {resp.status_code} {resp.text[:300]}")
+        return True
+
+    # Helpful error output without killing cron
+    body = (resp.text or "").strip()
+    print(f"Mailgun send failed: {resp.status_code} {body[:2000]}")
+    return False
 
 # --------------------------------------------------
 # Main
