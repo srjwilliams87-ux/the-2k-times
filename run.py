@@ -305,9 +305,9 @@ def main():
     email_html = render_email(world)
     subject = f"The 2k Times · {now_utc().strftime('%d.%m.%Y')}"
 
-   ok = send_mailgun(subject, email_html)
-if not ok:
-    print("Email failed, but continuing (cron will not error).")
-
-if __name__ == "__main__":
-    main()
+    if str(os.getenv("SEND_EMAIL", "false")).lower() == "true":
+        ok = send_mailgun(subject, email_html)
+        if not ok:
+            print("Email failed (continuing — cron safe).")
+    else:
+        print("SEND_EMAIL=false — skipping send")
