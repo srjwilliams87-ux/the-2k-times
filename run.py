@@ -291,7 +291,6 @@ def send_mailgun(subject: str, html: str) -> bool:
 # --------------------------------------------------
 
 def main():
-    print(">>> entered main()")
     world = fetch_world_stories(limit=3)
 
     print("World stories:")
@@ -308,4 +307,10 @@ def main():
     else:
         print("SEND_EMAIL=false — skipping send")
 
-print(">>> run.py finished")
+
+if __name__ == "__main__":
+    print(">>> run.py starting")
+    try:
+        main()
+    finally:
+        print(">>> run.py finished")
