@@ -292,8 +292,6 @@ def send_mailgun(subject: str, html: str) -> bool:
 
 def main():
     print(">>> entered main()")
-
-def main():
     world = fetch_world_stories(limit=3)
 
     print("World stories:")
