@@ -205,67 +205,57 @@ def _format_from_header(from_name: str, from_email: str) -> str:
         return f"\"{from_name}\" <{from_email}>"
     return f"{from_name} <{from_email}>"
 
-def send_mailgun(subject: str, html: str, text: str | None = None) -> bool:
+def send_mailgun(subject: str, html: str) -> bool:
     """
-    Known-good Mailgun API sender using env vars:
-      EMAIL_TO
-      EMAIL_FROM_NAME
-      EMAIL_FROM
-      MAILGUN_API_BASE_URL
-      MAILGUN_API_KEY
-      MAILGUN_DOMAIN
-      DEBUG_EMAIL
-      SEND_EMAIL
-
-    Returns True on success, False on failure.
-    Never raises unless requests itself explodes unexpectedly.
+    Drop-in Mailgun sender (API).
+    Env vars expected (per your Render screenshot):
+      - MAILGUN_API_KEY
+      - MAILGUN_DOMAIN
+      - MAILGUN_API_BASE_URL   (e.g. https://api.mailgun.net)  [optional; defaults to api.mailgun.net]
+      - EMAIL_FROM             (e.g. postmaster@<your-domain>)
+      - EMAIL_FROM_NAME        (e.g. The 2k Times)             [optional]
+      - EMAIL_TO
+      - DEBUG_EMAIL            ("true"/"false")                [optional]
+    Returns True on success, False on failure (cron-safe).
     """
-    send_enabled = _bool_env("SEND_EMAIL", default=False)
-    debug_enabled = _bool_env("DEBUG_EMAIL", default=False)
-
-    email_to = (os.getenv("EMAIL_TO") or "").strip()
-    from_name = (os.getenv("EMAIL_FROM_NAME") or "").strip()
-    from_email = (os.getenv("EMAIL_FROM") or "").strip()
+    import os
+    import requests
 
     api_key = (os.getenv("MAILGUN_API_KEY") or "").strip()
-    mg_domain = (os.getenv("MAILGUN_DOMAIN") or "").strip()
-    base_url = _clean_base_url(os.getenv("MAILGUN_API_BASE_URL"))
+    domain = (os.getenv("MAILGUN_DOMAIN") or "").strip()
+    base = (os.getenv("MAILGUN_API_BASE_URL") or "https://api.mailgun.net").strip().rstrip("/")
 
-    if not send_enabled:
-        print("SEND_EMAIL=false - skipping send")
-        return True  # not an error, just skipped
+    email_from = (os.getenv("EMAIL_FROM") or "").strip()
+    from_name = (os.getenv("EMAIL_FROM_NAME") or "The 2k Times").strip()
+    email_to = (os.getenv("EMAIL_TO") or "").strip()
 
-    # Basic env validation
-    missing = []
-    if not email_to: missing.append("EMAIL_TO")
-    if not from_email: missing.append("EMAIL_FROM")
-    if not api_key: missing.append("MAILGUN_API_KEY")
-    if not mg_domain: missing.append("MAILGUN_DOMAIN")
+    debug = (os.getenv("DEBUG_EMAIL") or "").strip().lower() in ("1", "true", "yes", "y", "on")
+
+    missing = [k for k, v in {
+        "MAILGUN_API_KEY": api_key,
+        "MAILGUN_DOMAIN": domain,
+        "EMAIL_FROM": email_from,
+        "EMAIL_TO": email_to,
+    }.items() if not v]
+
     if missing:
         print(f"Mailgun: missing env vars: {', '.join(missing)}")
         return False
 
-    # Sandbox domains are strict about From; this keeps you safe.
-    # If EMAIL_FROM isn't on the same domain, force postmaster@<domain>.
-    # (This avoids Mailgun rejecting with forbidden / unauthorized sender.)
-    if "sandbox" in mg_domain and not from_email.lower().endswith("@" + mg_domain.lower()):
-        print(f"Mailgun: sandbox domain detected; forcing EMAIL_FROM to postmaster@{mg_domain}")
-        from_email = f"postmaster@{mg_domain}"
+    # IMPORTANT: Use the same base URL you proved via curl.
+    endpoint = f"{base}/v3/{domain}/messages"
 
-    from_header = _format_from_header(from_name, from_email)
-
-    endpoint = f"{base_url}/v3/{mg_domain}/messages"
+    # Match your working curl test: from="The 2k Times <EMAIL_FROM>"
+    from_header = f"{from_name} <{email_from}>"
 
     data = {
         "from": from_header,
-        "to": [email_to],
+        "to": email_to,
         "subject": subject,
         "html": html,
     }
-    if text:
-        data["text"] = text
 
-    if debug_enabled:
+    if debug:
         print("Mailgun DEBUG:")
         print(f"  endpoint: {endpoint}")
         print(f"  from: {from_header}")
@@ -280,22 +270,28 @@ def send_mailgun(subject: str, html: str, text: str | None = None) -> bool:
             timeout=20,
         )
     except Exception as e:
-        print(f"Mailgun send exception: {type(e).__name__}: {e}")
+        print(f"Mailgun send exception: {e}")
         return False
 
     if 200 <= resp.status_code < 300:
-        if debug_enabled:
-            print(f"Mailgun OK: {resp.status_code} {resp.text[:300]}")
+        if debug:
+            print(f"Mailgun OK: {resp.status_code} {resp.text}")
         return True
 
-    # Helpful error output without killing cron
-    body = (resp.text or "").strip()
-    print(f"Mailgun send failed: {resp.status_code} {body[:2000]}")
+    # Helpful debugging for the exact problem you had
+    print(f"Mailgun send failed: {resp.status_code} {resp.text}")
+    if resp.status_code in (401, 403) and "Invalid private key" in (resp.text or ""):
+        print("Hint: Your API key is being rejected. Double-check MAILGUN_API_KEY and MAILGUN_API_BASE_URL.")
+        print("Your working curl used: https://api.mailgun.net (NOT api.eu.mailgun.net).")
+
     return False
 
 # --------------------------------------------------
 # Main
 # --------------------------------------------------
+
+def main():
+    print(">>> entered main()")
 
 def main():
     world = fetch_world_stories(limit=3)
