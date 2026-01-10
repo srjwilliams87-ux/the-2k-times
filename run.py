@@ -116,59 +116,210 @@ def get_whos_in_space():
 # HTML Rendering
 # --------------------------------------------------
 
-def render_email(world_stories):
-    date_str = now_utc().strftime("%d.%m.%Y")
+from html import escape
 
-    weather = get_weather_cardiff()
-    sunrise, sunset = get_sun_times()
-    space = get_whos_in_space()
-
-    html = f"""
-    <html>
-    <body style="background:#111;color:#fff;font-family:Arial,Helvetica,sans-serif;max-width:720px;margin:auto;">
-        <h1 style="font-size:42px;">The 2k Times</h1>
-        <p>{date_str} · Daily Edition · {ISSUE_TAG}</p>
-
-        <hr>
-
-        <h2>🌍 World Headlines</h2>
+def render_email(world, weather=None, sunrise_sunset=None, space_people=None):
+    """
+    Newspaper-style HTML email (Gmail-safe).
+    - world: list[dict] with title/summary/source and optionally reader_url/url
+    - weather: dict or string (optional)
+    - sunrise_sunset: dict or string (optional)
+    - space_people: list[str] or string (optional)
     """
 
-    for i, s in enumerate(world_stories, start=1):
-        html += f"""
-        <div style="margin-bottom:28px;">
-            <h3>{i}. {s['title']}</h3>
-            <p>{s['summary']}</p>
-            <a href="{reader_url(s['link'])}" style="color:#6fa8ff;">Read in Reader →</a>
-        </div>
+    def e(x):
+        return escape(str(x)) if x is not None else ""
+
+    def story_link(s):
+        return s.get("reader_url") or s.get("url") or "#"
+
+    def render_story(s, idx):
+        title = e(s.get("title", ""))
+        source = e(s.get("source", ""))
+        summary = e(s.get("summary", ""))
+        link = e(story_link(s))
+
+        # Small source label, big headline, then dek
+        return f"""
+        <tr>
+          <td style="padding: 0 0 18px 0;">
+            <div style="font-size:12px; letter-spacing:0.08em; text-transform:uppercase; opacity:0.8;">
+              {idx}. {source}
+            </div>
+            <div style="font-size:18px; line-height:1.25; font-weight:700; margin: 4px 0 6px 0;">
+              {title}
+            </div>
+            <div style="font-size:14px; line-height:1.55; margin: 0 0 10px 0;">
+              {summary}
+            </div>
+            <a href="{link}" style="font-size:14px; font-weight:600; text-decoration:none;">
+              Read in Reader &rarr;
+            </a>
+          </td>
+        </tr>
         """
 
-    html += f"""
-        <hr>
+    def render_box(title, body_html):
+        return f"""
+        <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0"
+               style="border:1px solid rgba(0,0,0,0.12); border-radius:10px;">
+          <tr>
+            <td style="padding:12px 12px 10px 12px;">
+              <div style="font-size:13px; letter-spacing:0.08em; text-transform:uppercase; font-weight:700;">
+                {e(title)}
+              </div>
+              <div style="height:8px;"></div>
+              <div style="font-size:14px; line-height:1.5;">
+                {body_html}
+              </div>
+            </td>
+          </tr>
+        </table>
+        """
 
-        <h3>☁️ Weather · Cardiff</h3>
-        <p>{weather}</p>
+    # Right column content (optional modules)
+    right_col_blocks = []
 
-        <h3>🌅 Sunrise / Sunset</h3>
-        <p>Sunrise: {sunrise} · Sunset: {sunset}</p>
+    if weather is not None:
+        if isinstance(weather, dict):
+            # Example: {"location":"Cardiff","temp":"1°C","hi":"6.8°C","lo":"0.9°C"}
+            w = weather
+            body = f"<strong>{e(w.get('location','Weather'))}</strong><br>{e(w.get('temp',''))} · H {e(w.get('hi',''))} / L {e(w.get('lo',''))}"
+        else:
+            body = e(weather)
+        right_col_blocks.append(render_box("Weather", body))
 
-        <h3>🚀 Who’s in Space</h3>
-    """
+    if sunrise_sunset is not None:
+        if isinstance(sunrise_sunset, dict):
+            ss = sunrise_sunset
+            body = f"Sunrise: <strong>{e(ss.get('sunrise',''))}</strong><br>Sunset: <strong>{e(ss.get('sunset',''))}</strong>"
+        else:
+            body = e(sunrise_sunset)
+        right_col_blocks.append(render_box("Sunrise / Sunset", body))
 
-    if space:
-        for p in space:
-            html += f"<p>{p['name']} ({p['craft']})</p>"
+    if space_people is not None:
+        if isinstance(space_people, (list, tuple)):
+            ppl = "<br>".join(e(x) for x in space_people)
+        else:
+            ppl = e(space_people)
+        right_col_blocks.append(render_box("Who's in Space", ppl))
+
+    right_col_html = ""
+    if right_col_blocks:
+        # Stack blocks with spacing
+        right_col_html = "<div style='height:12px;'></div>".join(right_col_blocks)
     else:
-        html += "<p>Unable to load space roster.</p>"
+        # If no modules provided, show a small placeholder note (or leave empty)
+        right_col_html = render_box("Today", "No extra modules enabled.")
 
-    html += """
-        <hr>
-        <p style="font-size:12px;opacity:0.7;">© The 2k Times · Delivered daily at 05:30</p>
-    </body>
-    </html>
-    """
+    # Edition line (you can change this to whatever you already build)
+    # Keep it plain text so it survives client quirks.
+    # If you already have now_utc(), you can pass in a preformatted string instead.
+    edition_line = "Daily Edition"
 
+    # Build main stories
+    stories_rows = "".join(render_story(s, i + 1) for i, s in enumerate(world or []))
+
+    html = f"""\
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <style>
+    /* Gmail supports <style> but still use inline for key layout */
+    @media screen and (max-width: 640px) {{
+      .container {{ width: 100% !important; }}
+      .col {{ display: block !important; width: 100% !important; }}
+      .col-pad-left {{ padding-left: 0 !important; }}
+      .rule-vert {{ display: none !important; }}
+      .masthead-title {{ font-size: 34px !important; }}
+      .headline {{ font-size: 20px !important; }}
+    }}
+  </style>
+</head>
+<body style="margin:0; padding:0; background:#f6f3ea;">
+  <!-- Outer background -->
+  <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="background:#f6f3ea;">
+    <tr>
+      <td align="center" style="padding: 24px 12px;">
+        <!-- Container -->
+        <table role="presentation" class="container" width="680" cellspacing="0" cellpadding="0" border="0"
+               style="width:680px; max-width:680px; background:#ffffff; border:1px solid rgba(0,0,0,0.12);">
+          <!-- Masthead -->
+          <tr>
+            <td style="padding: 22px 22px 14px 22px;">
+              <div class="masthead-title" style="font-family: Georgia, 'Times New Roman', Times, serif; font-size:42px; line-height:1.05; font-weight:700; margin:0;">
+                The 2k Times
+              </div>
+              <div style="height:10px;"></div>
+              <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0">
+                <tr>
+                  <td style="font-family: Arial, Helvetica, sans-serif; font-size:13px; letter-spacing:0.06em; text-transform:uppercase;">
+                    {e(edition_line)}
+                  </td>
+                  <td align="right" style="font-family: Arial, Helvetica, sans-serif; font-size:13px; letter-spacing:0.06em;">
+                    <!-- Put your date string here if you want -->
+                  </td>
+                </tr>
+              </table>
+              <div style="height:12px;"></div>
+              <div style="border-top:2px solid #111; height:0;"></div>
+              <div style="height:10px;"></div>
+              <div style="border-top:1px solid rgba(0,0,0,0.25); height:0;"></div>
+            </td>
+          </tr>
+
+          <!-- Two-column body -->
+          <tr>
+            <td style="padding: 18px 22px 24px 22px;">
+              <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0">
+                <tr>
+                  <!-- Left column -->
+                  <td class="col" width="64%" valign="top" style="width:64%; padding-right:16px;">
+                    <div style="font-family: Arial, Helvetica, sans-serif; font-size:13px; letter-spacing:0.08em; text-transform:uppercase; font-weight:800;">
+                      🌍 World Headlines
+                    </div>
+                    <div style="height:10px;"></div>
+                    <div style="border-top:1px solid rgba(0,0,0,0.18); height:0;"></div>
+                    <div style="height:14px;"></div>
+
+                    <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0"
+                           style="font-family: Arial, Helvetica, sans-serif; color:#111;">
+                      {stories_rows}
+                    </table>
+                  </td>
+
+                  <!-- Vertical rule -->
+                  <td class="rule-vert" width="1" valign="top" style="width:1px; background: rgba(0,0,0,0.12);"></td>
+
+                  <!-- Right column -->
+                  <td class="col col-pad-left" width="36%" valign="top" style="width:36%; padding-left:16px; font-family: Arial, Helvetica, sans-serif; color:#111;">
+                    {right_col_html}
+                  </td>
+                </tr>
+              </table>
+
+              <div style="height:18px;"></div>
+              <div style="border-top:1px solid rgba(0,0,0,0.18); height:0;"></div>
+              <div style="height:14px;"></div>
+
+              <div style="font-family: Arial, Helvetica, sans-serif; font-size:12px; line-height:1.4; opacity:0.75;">
+                You’re receiving this because you subscribed to The 2k Times.
+              </div>
+            </td>
+          </tr>
+
+        </table>
+        <!-- /Container -->
+      </td>
+    </tr>
+  </table>
+</body>
+</html>
+"""
     return html
+
 
 # --------------------------------------------------
 # Mailgun
