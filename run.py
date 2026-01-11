@@ -136,16 +136,19 @@ def render_email(world, edition="", weather=None, sunrise_sunset=None, space_peo
     def e(x):
         return escape(str(x)) if x is not None else ""
 
-    def story_link(s):
-    # your feed data uses 'link'
-        link = (s.get("reader_url") or s.get("url") or s.get("link") or "").strip()
-
-    # If you ever pass relative reader paths in future, this will fix them
+   def story_link(s):
+    link = (s.get("reader_url") or s.get("url") or s.get("link") or "").strip()
+    if not link:
+        return ""
+    if link.startswith(("http://", "https://")):
+        return link
+    if link.startswith("www."):
+        return "https://" + link
     base = (os.getenv("READER_BASE_URL", "") or "").rstrip("/")
     if base and link.startswith("/"):
         return base + link
-
     return link
+
 
 def render_story(s, idx):
     title = e(s.get("title", ""))
