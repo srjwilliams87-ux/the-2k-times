@@ -138,7 +138,7 @@ def render_email(world, edition="", weather=None, sunrise_sunset=None, space_peo
 
     def story_link(s):
     # your feed data uses 'link'
-    link = (s.get("reader_url") or s.get("url") or s.get("link") or "").strip()
+        link = (s.get("reader_url") or s.get("url") or s.get("link") or "").strip()
 
     if not link:
         return ""
