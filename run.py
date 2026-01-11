@@ -61,6 +61,23 @@ def fetch_world_stories(limit=3):
             })
     return stories
 
+def edition_line():
+    # If you already have a timezone helper, use it here.
+    # If SEND_TIMEZONE is already being used elsewhere, mirror that approach.
+    tz = os.getenv("SEND_TIMEZONE", "UTC")
+
+    # If you already use zoneinfo in the project, keep it consistent:
+    try:
+        from zoneinfo import ZoneInfo
+        dt = datetime.now(ZoneInfo(tz))
+    except Exception:
+        dt = datetime.utcnow()
+
+    # If you have an edition/version string in env or code, pull it here
+    edition_tag = os.getenv("EDITION_TAG", "v-newspaper-14")
+
+    return f"{dt.strftime('%d.%m.%Y')} · Daily Edition · {edition_tag}"
+
 # --------------------------------------------------
 # Sidebar Data
 # --------------------------------------------------
@@ -118,7 +135,7 @@ def get_whos_in_space():
 
 from html import escape
 
-def render_email(world, weather=None, sunrise_sunset=None, space_people=None):
+def render_email(world, edition="", weather=None, sunrise_sunset=None, space_people=None):
     """
     Newspaper-style HTML email (Gmail-safe).
     - world: list[dict] with title/summary/source and optionally reader_url/url
@@ -448,7 +465,15 @@ def main():
     for s in world:
         print(f"- [{s['source']}] {s['title']}")
 
-    email_html = render_email(world)
+    line = edition_line()
+    email_html = render_email(world, edition=line)
+
+    # STEP 4: write a local preview file (only when DEBUG_EMAIL=true)
+    if str(os.getenv("DEBUG_EMAIL", "false")).lower() == "true":
+        with open("email_preview.html", "w", encoding="utf-8") as f:
+            f.write(email_html)
+        print("Wrote email_preview.html")
+
     subject = f"The 2k Times · {now_utc().strftime('%d.%m.%Y')}"
 
     if str(os.getenv("SEND_EMAIL", "false")).lower() == "true":
