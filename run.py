@@ -7,6 +7,7 @@ import feedparser
 import datetime as dt
 from urllib.parse import quote_plus
 from email.utils import formatdate
+from datetime import datetime
 
 # --------------------------------------------------
 # Config
@@ -62,21 +63,9 @@ def fetch_world_stories(limit=3):
     return stories
 
 def edition_line():
-    # If you already have a timezone helper, use it here.
-    # If SEND_TIMEZONE is already being used elsewhere, mirror that approach.
-    tz = os.getenv("SEND_TIMEZONE", "UTC")
-
-    # If you already use zoneinfo in the project, keep it consistent:
-    try:
-        from zoneinfo import ZoneInfo
-        dt = datetime.now(ZoneInfo(tz))
-    except Exception:
-        dt = datetime.utcnow()
-
-    # If you have an edition/version string in env or code, pull it here
-    edition_tag = os.getenv("EDITION_TAG", "v-newspaper-14")
-
-    return f"{dt.strftime('%d.%m.%Y')} · Daily Edition · {edition_tag}"
+    edition_tag = "v-newspaper-14"
+    now = dt.datetime.utcnow()
+    return f"{now.strftime('%d.%m.%Y')} · Daily Edition · {edition_tag}"
 
 # --------------------------------------------------
 # Sidebar Data
