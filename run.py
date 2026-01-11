@@ -140,12 +140,6 @@ def render_email(world, edition="", weather=None, sunrise_sunset=None, space_peo
     # your feed data uses 'link'
         link = (s.get("reader_url") or s.get("url") or s.get("link") or "").strip()
 
-    # Ensure scheme exists (Gmail needs absolute URLs)
-    if link.startswith(("http://", "https://")):
-        return link
-    if link.startswith("www."):
-        return "https://" + link
-
     # If you ever pass relative reader paths in future, this will fix them
     base = (os.getenv("READER_BASE_URL", "") or "").rstrip("/")
     if base and link.startswith("/"):
