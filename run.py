@@ -153,7 +153,7 @@ def render_email(world, edition="", weather=None, sunrise_sunset=None, space_peo
 
     return link
 
-    def render_story(s, idx):
+def render_story(s, idx):
     title = e(s.get("title", ""))
     source = e(s.get("source", ""))
     summary = e(s.get("summary", ""))
@@ -183,6 +183,7 @@ def render_email(world, edition="", weather=None, sunrise_sunset=None, space_peo
       </td>
     </tr>
     """
+    
 
     def render_box(title, body_html):
         return f"""
