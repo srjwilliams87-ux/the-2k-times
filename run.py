@@ -160,7 +160,8 @@ def render_email(world, edition="", weather=None, sunrise_sunset=None, space_peo
         title = e(s.get("title", ""))
         source = e(s.get("source", ""))
         summary = e(s.get("summary", ""))
-        link = e(story_link(s))
+        raw_link = story_link(s)
+        link = e(raw_link) if raw_link else ""
 
         # Small source label, big headline, then dek
         return f"""
@@ -175,8 +176,11 @@ def render_email(world, edition="", weather=None, sunrise_sunset=None, space_peo
             <div style="font-size:14px; line-height:1.55; margin: 0 0 10px 0;">
               {summary}
             </div>
-            <a href="{link}" style="font-size:14px; font-weight:600; text-decoration:none;">
-              Read in Reader &rarr;
+            link_html = (
+    f'<a href="{link}" style="font-size:14px; font-weight:600; text-decoration:none;">'
+    'Read in Reader &rarr;</a>'
+    if link else ""
+)
             </a>
           </td>
         </tr>
