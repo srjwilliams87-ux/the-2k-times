@@ -340,7 +340,9 @@ def render_story(s, idx):
 </body>
 </html>
 """
-    return html
+    if 'html' not in locals():
+        raise RuntimeError("render_email(): html was never created")
+    return html        
 
 # --------------------------------------------------
 # Mailgun
