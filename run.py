@@ -475,6 +475,8 @@ def main():
     space_people = get_whos_in_space()
 
     email_html = render_email(
+        print("DEBUG email_html is", type(email_html), "value:", "None" if email_html is None else "string")
+
     world,
     edition=line,
     weather=weather,
