@@ -140,9 +140,6 @@ def render_email(world, edition="", weather=None, sunrise_sunset=None, space_peo
     # your feed data uses 'link'
         link = (s.get("reader_url") or s.get("url") or s.get("link") or "").strip()
 
-    if not link:
-        return ""
-
     # Ensure scheme exists (Gmail needs absolute URLs)
     if link.startswith(("http://", "https://")):
         return link
@@ -157,34 +154,35 @@ def render_email(world, edition="", weather=None, sunrise_sunset=None, space_peo
     return link
 
     def render_story(s, idx):
-        title = e(s.get("title", ""))
-        source = e(s.get("source", ""))
-        summary = e(s.get("summary", ""))
-        raw_link = story_link(s)
-        link = e(raw_link) if raw_link else ""
+    title = e(s.get("title", ""))
+    source = e(s.get("source", ""))
+    summary = e(s.get("summary", ""))
 
-        # Small source label, big headline, then dek
-        return f"""
-        <tr>
-          <td style="padding: 0 0 18px 0;">
-            <div style="font-size:12px; letter-spacing:0.08em; text-transform:uppercase; opacity:0.8;">
-              {idx}. {source}
-            </div>
-            <div style="font-size:18px; line-height:1.25; font-weight:700; margin: 4px 0 6px 0;">
-              {title}
-            </div>
-            <div style="font-size:14px; line-height:1.55; margin: 0 0 10px 0;">
-              {summary}
-            </div>
-            link_html = (
-    f'<a href="{link}" style="font-size:14px; font-weight:600; text-decoration:none;">'
-    'Read in Reader &rarr;</a>'
-    if link else ""
-)
-            </a>
-          </td>
-        </tr>
-        """
+    raw_link = story_link(s)          # <- unescaped
+    link = e(raw_link) if raw_link else ""
+
+    link_html = (
+        f'<a href="{link}" style="font-size:14px; font-weight:600; text-decoration:none;">'
+        'Read in Reader &rarr;</a>'
+        if link else ""
+    )
+
+    return f"""
+    <tr>
+      <td style="padding: 0 0 18px 0;">
+        <div style="font-size:12px; letter-spacing:0.08em; text-transform:uppercase; opacity:0.8;">
+          {idx}. {source}
+        </div>
+        <div style="font-size:18px; line-height:1.25; font-weight:700; margin: 4px 0 6px 0;">
+          {title}
+        </div>
+        <div style="font-size:14px; line-height:1.55; margin: 0 0 10px 0;">
+          {summary}
+        </div>
+        {link_html}
+      </td>
+    </tr>
+    """
 
     def render_box(title, body_html):
         return f"""
