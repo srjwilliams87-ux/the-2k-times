@@ -450,12 +450,26 @@ def send_mailgun(subject: str, html: str) -> bool:
 def main():
     world = fetch_world_stories(limit=3)
 
+    print("DEBUG world[0] keys:", list(world[0].keys()))
+    print("DEBUG url-ish:", world[0].get("reader_url"), world[0].get("url"), world[0].get("link"))
+
     print("World stories:")
     for s in world:
         print(f"- [{s['source']}] {s['title']}")
 
     line = edition_line()
-    email_html = render_email(world, edition=line)
+    weather = get_weather_cardiff()
+    sunrise_sunset = get_sun_times()
+    space_people = get_whos_in_space()
+
+    email_html = render_email(
+    world,
+    edition=line,
+    weather=weather,
+    sunrise_sunset=sunrise_sunset,
+    space_people=space_people,
+)
+
 
     # STEP 4: write a local preview file (only when DEBUG_EMAIL=true)
     if str(os.getenv("DEBUG_EMAIL", "false")).lower() == "true":
