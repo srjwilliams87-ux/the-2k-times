@@ -42,7 +42,7 @@ WORLD_SOURCES = [
 # --------------------------------------------------
 
 def now_utc():
-    return dt.datetime.utcnow()
+    return dt.datetime.now(dt.timezone.utc)
 
 def reader_url(original_url):
     return f"{READER_BASE_URL}/read?url={quote_plus(original_url)}"
@@ -64,7 +64,7 @@ def fetch_world_stories(limit=3):
 
 def edition_line():
     edition_tag = "v-newspaper-14"
-    now = dt.datetime.utcnow()
+    now = dt.datetime.now(dt.timezone.utc)
     return f"{now.strftime('%d.%m.%Y')} · Daily Edition · {edition_tag}"
 
 # --------------------------------------------------
@@ -137,7 +137,24 @@ def render_email(world, edition="", weather=None, sunrise_sunset=None, space_peo
         return escape(str(x)) if x is not None else ""
 
     def story_link(s):
-        return s.get("reader_url") or s.get("url") or "#"
+    # your feed data uses 'link'
+    link = (s.get("reader_url") or s.get("url") or s.get("link") or "").strip()
+
+    if not link:
+        return ""
+
+    # Ensure scheme exists (Gmail needs absolute URLs)
+    if link.startswith(("http://", "https://")):
+        return link
+    if link.startswith("www."):
+        return "https://" + link
+
+    # If you ever pass relative reader paths in future, this will fix them
+    base = (os.getenv("READER_BASE_URL", "") or "").rstrip("/")
+    if base and link.startswith("/"):
+        return base + link
+
+    return link
 
     def render_story(s, idx):
         title = e(s.get("title", ""))
@@ -449,9 +466,6 @@ def send_mailgun(subject: str, html: str) -> bool:
 
 def main():
     world = fetch_world_stories(limit=3)
-
-    print("DEBUG world[0] keys:", list(world[0].keys()))
-    print("DEBUG url-ish:", world[0].get("reader_url"), world[0].get("url"), world[0].get("link"))
 
     print("World stories:")
     for s in world:
