@@ -124,21 +124,9 @@ def get_whos_in_space():
 
 from html import escape
 
-def render_email(world, edition="", weather=None, sunrise_sunset=None, space_people=None):
-    return build_email_html(world, edition, weather, sunrise_sunset, space_people)
+from html import escape
 
-
-def build_email_html(world, edition="", weather=None, sunrise_sunset=None, space_people=None):
-    """
-    Newspaper-style HTML email (Gmail-safe).
-
-    - world: list[dict] with title/summary/source and optionally reader_url/url/link
-    - weather: dict or string (optional)
-    - sunrise_sunset: dict or string (optional)
-    - space_people: list[str] or string (optional)
-    """
-    
-    def story_link(s):
+def story_link(s):
     link = (s.get("reader_url") or s.get("url") or s.get("link") or "").strip()
     if not link:
         return ""
@@ -153,6 +141,24 @@ def build_email_html(world, edition="", weather=None, sunrise_sunset=None, space
         return base + link
 
     return link
+
+
+def render_email(world, edition="", weather=None, sunrise_sunset=None, space_people=None):
+    return build_email_html(world, edition, weather, sunrise_sunset, space_people)
+
+
+def build_email_html(world, edition="", weather=None, sunrise_sunset=None, space_people=None):
+    """
+    Newspaper-style HTML email (Gmail-safe).
+
+    - world: list[dict] with title/summary/source and optionally reader_url/url/link
+    - weather: dict or string (optional)
+    - sunrise_sunset: dict or string (optional)
+    - space_people: list[str] or string (optional)
+    """
+
+    def e(x):
+        return escape(str(x)) if x is not None else ""
     
     def render_story(s, idx):
         title = e(s.get("title", ""))
