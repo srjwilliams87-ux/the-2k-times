@@ -487,9 +487,13 @@ def main():
     sunrise_sunset = get_sun_times()
     space_people = get_whos_in_space()
 
-    email_html = render_email(
-        print("DEBUG email_html is", type(email_html), "value:", "None" if email_html is None else "string")
-
+    print(
+    "DEBUG email_html:",
+    type(email_html),
+    "is None?",
+    email_html is None
+)
+    
     world,
     edition=line,
     weather=weather,
