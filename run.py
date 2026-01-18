@@ -125,6 +125,10 @@ def get_whos_in_space():
 from html import escape
 
 def render_email(world, edition="", weather=None, sunrise_sunset=None, space_people=None):
+    return build_email_html(world, edition, weather, sunrise_sunset, space_people)
+
+
+def build_email_html(world, edition="", weather=None, sunrise_sunset=None, space_people=None):
     """
     Newspaper-style HTML email (Gmail-safe).
 
@@ -133,9 +137,6 @@ def render_email(world, edition="", weather=None, sunrise_sunset=None, space_peo
     - sunrise_sunset: dict or string (optional)
     - space_people: list[str] or string (optional)
     """
-    
-        def e(x):
-            return escape(str(x)) if x is not None else ""
     
     def story_link(s):
     link = (s.get("reader_url") or s.get("url") or s.get("link") or "").strip()
