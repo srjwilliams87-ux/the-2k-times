@@ -424,7 +424,7 @@ def send_mailgun(subject: str, html: str) -> bool:
     }.items() if not v]
 
     if missing:
-        print(f"Mailgun: missing env vars: {', '.join(missing)}")
+        (f"Mailgun: missing env vars: {', '.join(missing)}")
         return False
 
     # IMPORTANT: Use the same base URL you proved via curl.
@@ -441,7 +441,7 @@ def send_mailgun(subject: str, html: str) -> bool:
     }
 
     if debug:
-        print("Mailgun DEBUG:")
+        ("Mailgun DEBUG:")
         print(f"  endpoint: {endpoint}")
         print(f"  from: {from_header}")
         print(f"  to: {email_to}")
@@ -487,13 +487,7 @@ def main():
     sunrise_sunset = get_sun_times()
     space_people = get_whos_in_space()
 
-    print(
-    "DEBUG email_html:",
-    type(email_html),
-    "is None?",
-    email_html is None
-)
-    
+    email_html = render_email(
     world,
     edition=line,
     weather=weather,
@@ -501,6 +495,12 @@ def main():
     space_people=space_people,
 )
 
+print(
+    "DEBUG email_html:",
+    type(email_html),
+    "is None?",
+    email_html is None
+)
 
     # STEP 4: write a local preview file (only when DEBUG_EMAIL=true)
     if str(os.getenv("DEBUG_EMAIL", "false")).lower() == "true":
