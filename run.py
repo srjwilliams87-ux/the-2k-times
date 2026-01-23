@@ -494,6 +494,10 @@ def main():
         sunrise_sunset=sunrise_sunset,
         space_people=space_people,
     )
+
+    print("EMAIL_HTML TYPE:", type(email_html))
+    print("EMAIL_HTML LENGTH:", 0 if email_html is None else len(email_html))
+
     
     # STEP 4: write a local preview file (only when DEBUG_EMAIL=true)
     if str(os.getenv("DEBUG_EMAIL", "false")).lower() == "true":
