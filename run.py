@@ -487,14 +487,14 @@ def main():
     sunrise_sunset = get_sun_times()
     space_people = get_whos_in_space()
 
-   email_html = render_email(
-    world,
-    edition=line,
-    weather=weather,
-    sunrise_sunset=sunrise_sunset,
-    space_people=space_people,
-)
-
+    email_html = render_email(
+        world,
+        edition=line,
+        weather=weather,
+        sunrise_sunset=sunrise_sunset,
+        space_people=space_people,
+    )
+    
     # STEP 4: write a local preview file (only when DEBUG_EMAIL=true)
     if str(os.getenv("DEBUG_EMAIL", "false")).lower() == "true":
         with open("email_preview.html", "w", encoding="utf-8") as f:
