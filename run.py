@@ -250,7 +250,7 @@ def build_email_html(world, edition="", weather=None, sunrise_sunset=None, space
         # Edition line (you can change this to whatever you already build)
         # Keep it plain text so it survives client quirks.
         # If you already have now_utc(), you can pass in a preformatted string instead.
-        edition_line = "Daily Edition"
+        edition_line = edition or "Daily Edition"
     
         # Build main stories
         stories_rows = "".join(render_story(s, i + 1) for i, s in enumerate(world or []))
@@ -392,6 +392,10 @@ def _format_from_header(from_name: str, from_email: str) -> str:
         return f"\"{from_name}\" <{from_email}>"
     return f"{from_name} <{from_email}>"
 
+if not email_html:
+    print("ERROR: email_html is empty/None — skipping send")
+    return
+
 def send_mailgun(subject: str, html: str) -> bool:
     """
     Drop-in Mailgun sender (API).
@@ -490,16 +494,18 @@ def main():
     space_people = get_whos_in_space()
 
     email_html = render_email(
-        world,
-        edition=line,
-        weather=weather,
-        sunrise_sunset=sunrise_sunset,
-        space_people=space_people,
-    )
+    world,
+    edition=line,
+    weather=weather,
+    sunrise_sunset=sunrise_sunset,
+    space_people=space_people,
+)
 
-    print("EMAIL_HTML TYPE:", type(email_html))
-    print("EMAIL_HTML LENGTH:", 0 if email_html is None else len(email_html))
+print("EMAIL_HTML TYPE:", type(email_html))
+print("EMAIL_HTML LENGTH:", len(email_html) if isinstance(email_html, str) else 0)
 
+if not isinstance(email_html, str) or not email_html.strip():
+    raise RuntimeError("render_email() returned empty/None HTML")
     
     # STEP 4: write a local preview file (only when DEBUG_EMAIL=true)
     if str(os.getenv("DEBUG_EMAIL", "false")).lower() == "true":
