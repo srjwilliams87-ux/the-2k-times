@@ -146,6 +146,8 @@ def story_link(s):
 def render_email(world, edition="", weather=None, sunrise_sunset=None, space_people=None):
     return build_email_html(world, edition, weather, sunrise_sunset, space_people)
 
+    print("EMAIL_HTML TYPE:", type(email_html))
+    print("EMAIL_HTML LENGTH:", 0 if email_html is None else len(email_html))
 
 def build_email_html(world, edition="", weather=None, sunrise_sunset=None, space_people=None):
     """
