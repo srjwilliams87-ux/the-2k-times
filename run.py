@@ -399,22 +399,22 @@ def build_email_html(world, weather, sun, people, edition_tag="v-newspaper-17") 
 
 <style>
 /* Mobile stacking */
-@media screen and (max-width: 600px) {
-  .col-stack {
+@media screen and (max-width: 600px) {{
+  .col-stack {{
     display: block !important;
     width: 100% !important;
     max-width: 100% !important;
-  }
+  }}
 
-  .rule-vert {
+  .rule-vert {{
     display: none !important;
-  }
+  }}
 
-  .pad-reset {
+  .pad-reset {{
     padding-left: 0 !important;
     padding-right: 0 !important;
-  }
-}
+  }}
+}}
 </style>
 
 </head>
