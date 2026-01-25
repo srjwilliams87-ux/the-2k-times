@@ -1,531 +1,535 @@
-print(">>> run.py starting")
-
+#!/usr/bin/env python3
 import os
 import sys
-import requests
-import feedparser
+import json
+import html
 import datetime as dt
 from urllib.parse import quote_plus
-from email.utils import formatdate
-from datetime import datetime
-
-# --------------------------------------------------
-# Config
-# --------------------------------------------------
-
-ISSUE_TAG = "v-newspaper-14"
-READER_BASE_URL = os.environ.get("READER_BASE_URL", "").rstrip("/")
-
-SEND_EMAIL = os.environ.get("SEND_EMAIL", "false").lower() == "true"
-DEBUG_EMAIL = os.environ.get("DEBUG_EMAIL", "false").lower() == "true"
-
-EMAIL_TO = os.environ.get("EMAIL_TO")
-EMAIL_FROM_NAME = os.environ.get("EMAIL_FROM_NAME", "The 2k Times")
-
-MAILGUN_API_KEY = os.environ.get("MAILGUN_API_KEY")
-MAILGUN_DOMAIN = os.environ.get("MAILGUN_DOMAIN")
-
-SEND_TIMEZONE = os.environ.get("SEND_TIMEZONE", "UTC")
-
-# --------------------------------------------------
-# RSS Sources (World Headlines)
-# --------------------------------------------------
-
-WORLD_SOURCES = [
-    ("BBC", "https://feeds.bbci.co.uk/news/world/rss.xml"),
-    ("Reuters", "https://feeds.reuters.com/Reuters/worldNews"),
-    ("The Guardian", "https://www.theguardian.com/world/rss"),
-]
-
-# --------------------------------------------------
-# Helpers
-# --------------------------------------------------
-
-def now_utc():
-    return dt.datetime.now(dt.timezone.utc)
-
-def reader_url(original_url):
-    return f"{READER_BASE_URL}/read?url={quote_plus(original_url)}"
-
-def fetch_world_stories(limit=3):
-    stories = []
-    for name, url in WORLD_SOURCES:
-        feed = feedparser.parse(url)
-        for entry in feed.entries:
-            if len(stories) >= limit:
-                return stories
-            stories.append({
-                "source": name,
-                "title": entry.title,
-                "summary": entry.summary if hasattr(entry, "summary") else "",
-                "link": entry.link
-            })
-    return stories
-
-def edition_line():
-    edition_tag = "v-newspaper-14"
-    now = dt.datetime.now(dt.timezone.utc)
-    return f"{now.strftime('%d.%m.%Y')} · Daily Edition · {edition_tag}"
-
-# --------------------------------------------------
-# Sidebar Data
-# --------------------------------------------------
-
-def get_weather_cardiff():
-    try:
-        r = requests.get(
-            "https://api.open-meteo.com/v1/forecast",
-            params={
-                "latitude": 51.4816,
-                "longitude": -3.1791,
-                "current_weather": True,
-                "daily": "temperature_2m_max,temperature_2m_min",
-                "timezone": "Europe/London",
-            },
-            timeout=10,
-        )
-        data = r.json()
-        cw = data["current_weather"]
-        hi = data["daily"]["temperature_2m_max"][0]
-        lo = data["daily"]["temperature_2m_min"][0]
-        return f"{cw['temperature']}°C · H {hi}°C / L {lo}°C"
-    except Exception:
-        return "Weather unavailable"
-
-def get_sun_times():
-    try:
-        r = requests.get(
-            "https://api.sunrise-sunset.org/json",
-            params={
-                "lat": 51.4816,
-                "lng": -3.1791,
-                "formatted": 0,
-            },
-            timeout=10,
-        )
-        res = r.json()["results"]
-        sunrise = res["sunrise"][11:16]
-        sunset = res["sunset"][11:16]
-        return sunrise, sunset
-    except Exception:
-        return "—", "—"
-
-def get_whos_in_space():
-    try:
-        r = requests.get("http://api.open-notify.org/astros.json", timeout=10)
-        people = r.json()["people"]
-        return people
-    except Exception:
-        return []
-
-# --------------------------------------------------
-# HTML Rendering
-# --------------------------------------------------
-
-from html import escape
-
-from html import escape
-
-def story_link(s):
-    link = (s.get("reader_url") or s.get("url") or s.get("link") or "").strip()
-    if not link:
-        return ""
-
-    if link.startswith(("http://", "https://")):
-        return link
-    if link.startswith("www."):
-        return "https://" + link
-
-    base = (os.getenv("READER_BASE_URL", "") or "").rstrip("/")
-    if base and link.startswith("/"):
-        return base + link
-
-    return link
-
-
-def render_email(world, edition="", weather=None, sunrise_sunset=None, space_people=None):
-    return build_email_html(world, edition, weather, sunrise_sunset, space_people)
-
-    print("EMAIL_HTML TYPE:", type(email_html))
-    print("EMAIL_HTML LENGTH:", 0 if email_html is None else len(email_html))
-
-def build_email_html(world, edition="", weather=None, sunrise_sunset=None, space_people=None):
-    """
-    Newspaper-style HTML email (Gmail-safe).
-
-    - world: list[dict] with title/summary/source and optionally reader_url/url/link
-    - weather: dict or string (optional)
-    - sunrise_sunset: dict or string (optional)
-    - space_people: list[str] or string (optional)
-    """
-
-    def e(x):
-        return escape(str(x)) if x is not None else ""
-    
-    def render_story(s, idx):
-        title = e(s.get("title", ""))
-        source = e(s.get("source", ""))
-        summary = e(s.get("summary", ""))
-    
-        raw_link = story_link(s)          # <- unescaped
-        link = e(raw_link) if raw_link else ""
-    
-        link_html = (
-            f'<a href="{link}" style="font-size:14px; font-weight:600; text-decoration:none;">'
-            'Read in Reader &rarr;</a>'
-            if link else ""
-        )
-    
-        return f"""
-        <tr>
-          <td style="padding: 0 0 18px 0;">
-            <div style="font-size:12px; letter-spacing:0.08em; text-transform:uppercase; opacity:0.8;">
-              {idx}. {source}
-            </div>
-            <div style="font-size:18px; line-height:1.25; font-weight:700; margin: 4px 0 6px 0;">
-              {title}
-            </div>
-            <div style="font-size:14px; line-height:1.55; margin: 0 0 10px 0;">
-              {summary}
-            </div>
-            {link_html}
-          </td>
-        </tr>
-        """
-        
-    
-        def render_box(title, body_html):
-            return f"""
-            <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0"
-                   style="border:1px solid rgba(0,0,0,0.12); border-radius:10px;">
-              <tr>
-                <td style="padding:12px 12px 10px 12px;">
-                  <div style="font-size:13px; letter-spacing:0.08em; text-transform:uppercase; font-weight:700;">
-                    {e(title)}
-                  </div>
-                  <div style="height:8px;"></div>
-                  <div style="font-size:14px; line-height:1.5;">
-                    {body_html}
-                  </div>
-                </td>
-              </tr>
-            </table>
-            """
-    
-        # Right column content (optional modules)
-        right_col_blocks = []
-    
-        if weather is not None:
-            if isinstance(weather, dict):
-                # Example: {"location":"Cardiff","temp":"1°C","hi":"6.8°C","lo":"0.9°C"}
-                w = weather
-                body = f"<strong>{e(w.get('location','Weather'))}</strong><br>{e(w.get('temp',''))} · H {e(w.get('hi',''))} / L {e(w.get('lo',''))}"
-            else:
-                body = e(weather)
-            right_col_blocks.append(render_box("Weather", body))
-    
-        if sunrise_sunset is not None:
-            if isinstance(sunrise_sunset, dict):
-                ss = sunrise_sunset
-                body = f"Sunrise: <strong>{e(ss.get('sunrise',''))}</strong><br>Sunset: <strong>{e(ss.get('sunset',''))}</strong>"
-            else:
-                body = e(sunrise_sunset)
-            right_col_blocks.append(render_box("Sunrise / Sunset", body))
-    
-        if space_people is not None:
-            if isinstance(space_people, (list, tuple)):
-                ppl = "<br>".join(e(x) for x in space_people)
-            else:
-                ppl = e(space_people)
-            right_col_blocks.append(render_box("Who's in Space", ppl))
-    
-        right_col_html = ""
-        if right_col_blocks:
-            # Stack blocks with spacing
-            right_col_html = "<div style='height:12px;'></div>".join(right_col_blocks)
-        else:
-            # If no modules provided, show a small placeholder note (or leave empty)
-            right_col_html = render_box("Today", "No extra modules enabled.")
-    
-        # Edition line (you can change this to whatever you already build)
-        # Keep it plain text so it survives client quirks.
-        # If you already have now_utc(), you can pass in a preformatted string instead.
-        edition_line = edition or "Daily Edition"
-    
-        # Build main stories
-        stories_rows = "".join(render_story(s, i + 1) for i, s in enumerate(world or []))
-    
-        html = f"""\
-    <!doctype html>
-    <html>
-    <head>
-      <meta charset="utf-8">
-      <meta name="viewport" content="width=device-width, initial-scale=1">
-      <style>
-        /* Gmail supports <style> but still use inline for key layout */
-        @media screen and (max-width: 640px) {{
-          .container {{ width: 100% !important; }}
-          .col {{ display: block !important; width: 100% !important; }}
-          .col-pad-left {{ padding-left: 0 !important; }}
-          .rule-vert {{ display: none !important; }}
-          .masthead-title {{ font-size: 34px !important; }}
-          .headline {{ font-size: 20px !important; }}
-        }}
-      </style>
-    </head>
-    <body style="margin:0; padding:0; background:#f6f3ea;">
-      <!-- Outer background -->
-      <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="background:#f6f3ea;">
-        <tr>
-          <td align="center" style="padding: 24px 12px;">
-            <!-- Container -->
-            <table role="presentation" class="container" width="680" cellspacing="0" cellpadding="0" border="0"
-                   style="width:680px; max-width:680px; background:#ffffff; border:1px solid rgba(0,0,0,0.12);">
-              <!-- Masthead -->
-              <tr>
-                <td style="padding: 22px 22px 14px 22px;">
-                  <div class="masthead-title" style="font-family: Georgia, 'Times New Roman', Times, serif; font-size:42px; line-height:1.05; font-weight:700; margin:0;">
-                    The 2k Times
-                  </div>
-                  <div style="height:10px;"></div>
-                  <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0">
-                    <tr>
-                      <td style="font-family: Arial, Helvetica, sans-serif; font-size:13px; letter-spacing:0.06em; text-transform:uppercase;">
-                        {e(edition_line)}
-                      </td>
-                      <td align="right" style="font-family: Arial, Helvetica, sans-serif; font-size:13px; letter-spacing:0.06em;">
-                        <!-- Put your date string here if you want -->
-                      </td>
-                    </tr>
-                  </table>
-                  <div style="height:12px;"></div>
-                  <div style="border-top:2px solid #111; height:0;"></div>
-                  <div style="height:10px;"></div>
-                  <div style="border-top:1px solid rgba(0,0,0,0.25); height:0;"></div>
-                </td>
-              </tr>
-    
-              <!-- Two-column body -->
-              <tr>
-                <td style="padding: 18px 22px 24px 22px;">
-                  <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0">
-                    <tr>
-                      <!-- Left column -->
-                      <td class="col" width="64%" valign="top" style="width:64%; padding-right:16px;">
-                        <div style="font-family: Arial, Helvetica, sans-serif; font-size:13px; letter-spacing:0.08em; text-transform:uppercase; font-weight:800;">
-                          🌍 World Headlines
-                        </div>
-                        <div style="height:10px;"></div>
-                        <div style="border-top:1px solid rgba(0,0,0,0.18); height:0;"></div>
-                        <div style="height:14px;"></div>
-    
-                        <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0"
-                               style="font-family: Arial, Helvetica, sans-serif; color:#111;">
-                          {stories_rows}
-                        </table>
-                      </td>
-    
-                      <!-- Vertical rule -->
-                      <td class="rule-vert" width="1" valign="top" style="width:1px; background: rgba(0,0,0,0.12);"></td>
-    
-                      <!-- Right column -->
-                      <td class="col col-pad-left" width="36%" valign="top" style="width:36%; padding-left:16px; font-family: Arial, Helvetica, sans-serif; color:#111;">
-                        {right_col_html}
-                      </td>
-                    </tr>
-                  </table>
-    
-                  <div style="height:18px;"></div>
-                  <div style="border-top:1px solid rgba(0,0,0,0.18); height:0;"></div>
-                  <div style="height:14px;"></div>
-    
-                  <div style="font-family: Arial, Helvetica, sans-serif; font-size:12px; line-height:1.4; opacity:0.75;">
-                    You’re receiving this because you subscribed to The 2k Times.
-                  </div>
-                </td>
-              </tr>
-    
-            </table>
-            <!-- /Container -->
-          </td>
-        </tr>
-      </table>
-    </body>
-    </html>
-    """
-        if 'html' not in locals():
-            raise RuntimeError("render_email(): html was never created")
-        return html        
-
-# --------------------------------------------------
-# Mailgun
-# --------------------------------------------------
-
-import os
-import re
 import requests
+import xml.etree.ElementTree as ET
 
-def _bool_env(name: str, default: bool = False) -> bool:
+# -----------------------------
+# Config / helpers
+# -----------------------------
+
+CARDIFF_LAT = 51.4816
+CARDIFF_LON = -3.1791
+TIMEZONE = "Europe/London"
+
+
+def now_local() -> dt.datetime:
+    # Render runs in UTC; we want UK-local date display
+    try:
+        from zoneinfo import ZoneInfo
+        return dt.datetime.now(ZoneInfo(TIMEZONE))
+    except Exception:
+        return dt.datetime.utcnow()
+
+
+def e(x) -> str:
+    return html.escape("" if x is None else str(x))
+
+
+def bool_env(name: str, default: bool = False) -> bool:
     v = os.getenv(name, "")
     if v == "":
         return default
     return v.strip().lower() in ("1", "true", "yes", "y", "on")
 
-def _clean_base_url(url: str) -> str:
-    url = (url or "").strip()
-    if not url:
-        return "https://api.mailgun.net"
-    return url.rstrip("/")
 
-def _format_from_header(from_name: str, from_email: str) -> str:
+def env_required(name: str) -> str:
+    v = os.getenv(name)
+    if not v:
+        raise RuntimeError(f"Missing required env var: {name}")
+    return v
+
+
+def reader_link(original_url: str) -> str:
     """
-    Returns a valid RFC-ish From header.
-    If name is blank, returns the email only.
+    Turns a story URL into your Reader URL if READER_BASE_URL is set.
+    Example: https://your-reader.com/read?url=<encoded>
     """
-    from_name = (from_name or "").strip()
-    from_email = (from_email or "").strip()
-    if not from_name:
-        return from_email
-    # Quote if contains special chars
-    if re.search(r'[",<>@]', from_name):
-        from_name = from_name.replace('"', '\\"')
-        return f"\"{from_name}\" <{from_email}>"
-    return f"{from_name} <{from_email}>"
+    if not original_url:
+        return ""
+    base = (os.getenv("READER_BASE_URL", "") or "").rstrip("/")
+    if not base:
+        return original_url
+    return f"{base}/read?url={quote_plus(original_url)}"
 
-if not email_html:
-    print("ERROR: email_html is empty/None — skipping send")
-    return
 
-def send_mailgun(subject: str, html: str) -> bool:
+# -----------------------------
+# World headlines (RSS)
+# -----------------------------
+
+DEFAULT_WORLD_FEEDS = [
+    # BBC World
+    "https://feeds.bbci.co.uk/news/world/rss.xml",
+    # BBC Top Stories (backup-ish)
+    "https://feeds.bbci.co.uk/news/rss.xml",
+]
+
+
+def parse_rss_items(xml_text: str):
     """
-    Drop-in Mailgun sender (API).
-    Env vars expected (per your Render screenshot):
-      - MAILGUN_API_KEY
-      - MAILGUN_DOMAIN
-      - MAILGUN_API_BASE_URL   (e.g. https://api.mailgun.net)  [optional; defaults to api.mailgun.net]
-      - EMAIL_FROM             (e.g. postmaster@<your-domain>)
-      - EMAIL_FROM_NAME        (e.g. The 2k Times)             [optional]
-      - EMAIL_TO
-      - DEBUG_EMAIL            ("true"/"false")                [optional]
-    Returns True on success, False on failure (cron-safe).
+    Returns list of dicts: {title, url, source, summary}
     """
-    import os
-    import requests
+    items = []
+    root = ET.fromstring(xml_text)
 
-    api_key = (os.getenv("MAILGUN_API_KEY") or "").strip()
-    domain = (os.getenv("MAILGUN_DOMAIN") or "").strip()
-    base = (os.getenv("MAILGUN_API_BASE_URL") or "https://api.mailgun.net").strip().rstrip("/")
+    # RSS 2.0: channel/item
+    channel = root.find("channel")
+    if channel is not None:
+        for it in channel.findall("item"):
+            title = (it.findtext("title") or "").strip()
+            link = (it.findtext("link") or "").strip()
+            desc = (it.findtext("description") or "").strip()
 
-    email_from = (os.getenv("EMAIL_FROM") or "").strip()
-    from_name = (os.getenv("EMAIL_FROM_NAME") or "The 2k Times").strip()
-    email_to = (os.getenv("EMAIL_TO") or "").strip()
+            # try to strip some HTML-ish noise from RSS description
+            summary = desc
+            summary = summary.replace("<![CDATA[", "").replace("]]>", "")
+            summary = summary.replace("\n", " ").strip()
 
-    debug = (os.getenv("DEBUG_EMAIL") or "").strip().lower() in ("1", "true", "yes", "y", "on")
+            if title and link:
+                items.append(
+                    {
+                        "title": title,
+                        "url": link,
+                        "summary": summary,
+                    }
+                )
+        return items
 
-    missing = [k for k, v in {
-        "MAILGUN_API_KEY": api_key,
-        "MAILGUN_DOMAIN": domain,
-        "EMAIL_FROM": email_from,
-        "EMAIL_TO": email_to,
-    }.items() if not v]
+    # Atom: entry
+    ns = {"atom": "http://www.w3.org/2005/Atom"}
+    for entry in root.findall("atom:entry", ns):
+        title = (entry.findtext("atom:title", default="", namespaces=ns) or "").strip()
+        link_el = entry.find("atom:link", ns)
+        link = (link_el.get("href", "").strip() if link_el is not None else "")
+        summary = (entry.findtext("atom:summary", default="", namespaces=ns) or "").strip()
+        if title and link:
+            items.append({"title": title, "url": link, "summary": summary})
+    return items
 
-    if missing:
-        (f"Mailgun: missing env vars: {', '.join(missing)}")
-        return False
 
-    # IMPORTANT: Use the same base URL you proved via curl.
-    endpoint = f"{base}/v3/{domain}/messages"
+def fetch_world_stories(limit=3):
+    """
+    Pulls stories from WORLD_FEEDS (comma-separated) or defaults.
+    """
+    feeds_raw = os.getenv("WORLD_FEEDS", "").strip()
+    feeds = [f.strip() for f in feeds_raw.split(",") if f.strip()] if feeds_raw else DEFAULT_WORLD_FEEDS
 
-    # Match your working curl test: from="The 2k Times <EMAIL_FROM>"
-    from_header = f"{from_name} <{email_from}>"
+    seen = set()
+    collected = []
 
-    data = {
-        "from": from_header,
-        "to": email_to,
-        "subject": subject,
-        "html": html,
+    headers = {
+        "User-Agent": "2k-times-bot/1.0 (+https://example.com) python-requests"
     }
 
-    if debug:
-        ("Mailgun DEBUG:")
-        print(f"  endpoint: {endpoint}")
-        print(f"  from: {from_header}")
-        print(f"  to: {email_to}")
-        print(f"  subject: {subject}")
+    for feed_url in feeds:
+        try:
+            r = requests.get(feed_url, timeout=15, headers=headers)
+            r.raise_for_status()
+            items = parse_rss_items(r.text)
 
+            # Infer source name
+            source = "BBC" if "bbc.co.uk" in feed_url else "News"
+
+            for it in items:
+                key = it["url"]
+                if key in seen:
+                    continue
+                seen.add(key)
+                collected.append(
+                    {
+                        "source": source,
+                        "title": it["title"],
+                        "summary": it.get("summary", "") or "",
+                        "url": it["url"],
+                        "reader_url": reader_link(it["url"]),
+                    }
+                )
+                if len(collected) >= limit:
+                    return collected
+        except Exception:
+            continue
+
+    return collected[:limit]
+
+
+# -----------------------------
+# Weather + sunrise/sunset (Open-Meteo)
+# -----------------------------
+
+def get_cardiff_weather_and_sun():
+    """
+    Uses Open-Meteo (no API key). Returns:
+    weather: dict {temp, feels, hi, lo}
+    sun: dict {sunrise, sunset} in local time strings HH:MM
+    """
+    url = (
+        "https://api.open-meteo.com/v1/forecast"
+        f"?latitude={CARDIFF_LAT}&longitude={CARDIFF_LON}"
+        f"&current=temperature_2m,apparent_temperature"
+        f"&daily=temperature_2m_max,temperature_2m_min,sunrise,sunset"
+        f"&timezone={quote_plus(TIMEZONE)}"
+    )
+    r = requests.get(url, timeout=15)
+    r.raise_for_status()
+    data = r.json()
+
+    cur = data.get("current", {}) or {}
+    daily = data.get("daily", {}) or {}
+
+    def fmt_c(x):
+        try:
+            return f"{float(x):.1f}°C"
+        except Exception:
+            return ""
+
+    temp = fmt_c(cur.get("temperature_2m"))
+    feels = fmt_c(cur.get("apparent_temperature"))
+
+    hi = ""
+    lo = ""
+    if daily.get("temperature_2m_max"):
+        hi = fmt_c(daily["temperature_2m_max"][0])
+    if daily.get("temperature_2m_min"):
+        lo = fmt_c(daily["temperature_2m_min"][0])
+
+    sunrise = ""
+    sunset = ""
+    if daily.get("sunrise"):
+        sunrise = (daily["sunrise"][0] or "").split("T")[-1][:5]
+    if daily.get("sunset"):
+        sunset = (daily["sunset"][0] or "").split("T")[-1][:5]
+
+    weather = {"location": "Cardiff", "temp": temp, "feels": feels, "hi": hi, "lo": lo}
+    sun = {"sunrise": sunrise, "sunset": sunset}
+    return weather, sun
+
+
+# -----------------------------
+# Who's in space
+# -----------------------------
+
+def get_whos_in_space():
+    """
+    Prefer whosinspace.com; fallback to Open Notify.
+    Returns list of strings like: "Name (ISS)"
+    """
+    # 1) Try whosinspace.com (endpoint formats can vary; try a few)
+    candidates = [
+        "https://www.whosinspace.com/people-in-space.json",
+        "https://www.whosinspace.com/astronauts.json",
+        "https://www.whosinspace.com/",
+    ]
+    headers = {"User-Agent": "2k-times-bot/1.0"}
+
+    for u in candidates:
+        try:
+            r = requests.get(u, timeout=15, headers=headers)
+            r.raise_for_status()
+
+            # If it’s JSON, parse it
+            ctype = (r.headers.get("Content-Type") or "").lower()
+            if "json" in ctype or r.text.strip().startswith("{") or r.text.strip().startswith("["):
+                data = r.json()
+                people = []
+
+                # Try common shapes
+                if isinstance(data, dict):
+                    if "people" in data and isinstance(data["people"], list):
+                        for p in data["people"]:
+                            name = (p.get("name") or "").strip()
+                            craft = (p.get("craft") or p.get("station") or "").strip()
+                            if name:
+                                people.append(f"{name} ({craft or 'Space'})")
+                    elif "astronauts" in data and isinstance(data["astronauts"], list):
+                        for p in data["astronauts"]:
+                            name = (p.get("name") or "").strip()
+                            craft = (p.get("craft") or p.get("station") or "").strip()
+                            if name:
+                                people.append(f"{name} ({craft or 'Space'})")
+                elif isinstance(data, list):
+                    for p in data:
+                        if isinstance(p, dict):
+                            name = (p.get("name") or "").strip()
+                            craft = (p.get("craft") or p.get("station") or "").strip()
+                            if name:
+                                people.append(f"{name} ({craft or 'Space'})")
+
+                if people:
+                    return people
+        except Exception:
+            pass
+
+    # 2) Fallback: Open Notify
     try:
-        resp = requests.post(
-            endpoint,
-            auth=("api", api_key),
-            data=data,
-            timeout=20,
-        )
-    except Exception as e:
-        print(f"Mailgun send exception: {e}")
+        r = requests.get("http://api.open-notify.org/astros.json", timeout=15)
+        r.raise_for_status()
+        data = r.json()
+        people = []
+        for p in data.get("people", []) or []:
+            name = (p.get("name") or "").strip()
+            craft = (p.get("craft") or "").strip()
+            if name:
+                people.append(f"{name} ({craft or 'Space'})")
+        return people
+    except Exception:
+        return []
+
+
+# -----------------------------
+# HTML rendering (matches screenshot layout)
+# -----------------------------
+
+def render_story(story, idx: int) -> str:
+    title = e(story.get("title"))
+    source = e(story.get("source"))
+    summary = e(story.get("summary"))
+
+    # Prefer reader_url if present; else url
+    raw_link = story.get("reader_url") or story.get("url") or ""
+    link = e(raw_link)
+
+    link_html = (
+        f'<a href="{link}" style="color:#5aa2ff; text-decoration:none; font-weight:600;">Read in Reader →</a>'
+        if raw_link else ""
+    )
+
+    # “Top story” styling for first card
+    if idx == 1:
+        return f"""
+        <div style="padding:18px 0; border-bottom:1px solid rgba(255,255,255,0.08);">
+          <div style="display:flex; gap:16px;">
+            <div style="width:4px; background:#eaeaea; border-radius:2px; opacity:0.9;"></div>
+            <div style="flex:1;">
+              <div style="font-size:12px; letter-spacing:0.08em; text-transform:uppercase; opacity:0.75; margin-bottom:10px;">
+                TOP STORY
+              </div>
+              <div style="font-size:26px; line-height:1.15; font-weight:800; margin:0 0 10px 0;">
+                {idx}. {title}
+              </div>
+              <div style="font-size:16px; line-height:1.55; opacity:0.9; margin-bottom:12px;">
+                {summary}
+              </div>
+              <div style="font-size:18px;">
+                {link_html}
+              </div>
+            </div>
+          </div>
+        </div>
+        """
+
+    # Normal stories
+    return f"""
+    <div style="padding:18px 0; border-bottom:1px solid rgba(255,255,255,0.08);">
+      <div style="font-size:24px; line-height:1.15; font-weight:800; margin:0 0 10px 0;">
+        {idx}. {title}
+      </div>
+      <div style="font-size:16px; line-height:1.55; opacity:0.9; margin-bottom:12px;">
+        {summary}
+      </div>
+      <div style="font-size:18px;">
+        {link_html}
+      </div>
+    </div>
+    """
+
+
+def render_box(title: str, body_html: str) -> str:
+    return f"""
+    <div style="padding:16px 0; border-bottom:1px solid rgba(255,255,255,0.08);">
+      <div style="font-size:18px; font-weight:800; margin-bottom:10px; display:flex; align-items:center; gap:10px;">
+        {title}
+      </div>
+      <div style="font-size:16px; line-height:1.5; opacity:0.95;">
+        {body_html}
+      </div>
+    </div>
+    """
+
+
+def build_email_html(world, weather, sun, people, edition_tag="v-newspaper-17") -> str:
+    local = now_local()
+    edition_line = f"{local.strftime('%d.%m.%Y')} · Daily Edition · {edition_tag}"
+
+    # Left column: world headlines
+    stories_html = "".join(render_story(s, i + 1) for i, s in enumerate(world[:3]))
+
+    # Right column: inside today + weather + sunrise/sunset + space
+    inside_html = """
+      <div style="opacity:0.9; margin-bottom:10px;">Curated from the last 24 hours.<br/>Reader links included.</div>
+    """
+
+    # Weather
+    w = weather or {}
+    weather_line = f"{e(w.get('temp'))} (feels {e(w.get('feels'))}) · H {e(w.get('hi'))} / L {e(w.get('lo'))}"
+    weather_html = f"""
+      <div style="font-weight:700; margin-bottom:6px;">{e(w.get('location', 'Cardiff'))}</div>
+      <div>{weather_line}</div>
+    """
+
+    # Sunrise/sunset
+    s = sun or {}
+    sun_html = f"""
+      <div>Sunrise: <b>{e(s.get('sunrise'))}</b> &nbsp;·&nbsp; Sunset: <b>{e(s.get('sunset'))}</b></div>
+    """
+
+    # Who’s in space
+    if people:
+        ppl_html = "<br/>".join(e(p) for p in people)
+    else:
+        ppl_html = "Unavailable right now."
+
+    right_col = (
+        render_box("🔎 Inside today", inside_html)
+        + render_box("⛅ Weather · Cardiff", weather_html)
+        + render_box("🌅 Sunrise / Sunset", sun_html)
+        + render_box("🚀 Who's in space", ppl_html)
+    )
+
+    # Whole email
+    html_out = f"""<!doctype html>
+<html>
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>The 2k Times</title>
+</head>
+<body style="margin:0; background:#101010; color:#f2f2f2; font-family: Arial, Helvetica, sans-serif;">
+  <div style="max-width:980px; margin:0 auto; padding:26px 18px;">
+    <div style="text-align:center; margin-bottom:18px;">
+      <div style="font-size:64px; font-weight:900; letter-spacing:-0.02em;">The 2k Times</div>
+      <div style="margin-top:10px; font-size:18px; opacity:0.9;">{e(edition_line)}</div>
+    </div>
+
+    <div style="height:1px; background:rgba(255,255,255,0.12); margin:18px 0 22px;"></div>
+
+    <div style="display:flex; align-items:center; gap:10px; font-size:22px; font-weight:800; margin-bottom:10px;">
+      🌍 World Headlines
+    </div>
+    <div style="height:1px; background:rgba(255,255,255,0.12); margin:10px 0 22px;"></div>
+
+    <div style="display:flex; gap:26px;">
+      <!-- Left column -->
+      <div style="flex: 0 0 64%; min-width: 0;">
+        {stories_html}
+      </div>
+
+      <!-- Right column -->
+      <div style="flex: 0 0 36%; min-width: 0;">
+        {right_col}
+      </div>
+    </div>
+
+    <div style="height:1px; background:rgba(255,255,255,0.12); margin:22px 0 14px;"></div>
+    <div style="font-size:12px; opacity:0.65;">
+      You’re receiving this because you subscribed to The 2k Times.
+    </div>
+  </div>
+</body>
+</html>
+"""
+    return html_out
+
+
+# -----------------------------
+# Mailgun
+# -----------------------------
+
+def send_mailgun(subject: str, html_body: str) -> bool:
+    """
+    Required env:
+      MAILGUN_API_KEY
+      MAILGUN_DOMAIN
+      MAILGUN_FROM
+      MAILGUN_TO
+    """
+    api_key = env_required("MAILGUN_API_KEY")
+    domain = env_required("MAILGUN_DOMAIN")
+    from_addr = env_required("MAILGUN_FROM")
+    to_addr = env_required("MAILGUN_TO")
+
+    url = f"https://api.mailgun.net/v3/{domain}/messages"
+    auth = ("api", api_key)
+
+    data = {
+        "from": from_addr,
+        "to": [to_addr],
+        "subject": subject,
+        "html": html_body,
+    }
+
+    r = requests.post(url, auth=auth, data=data, timeout=20)
+    if r.status_code >= 400:
+        print(f"Mailgun send failed: {r.status_code} {r.text}")
         return False
+    return True
 
-    if 200 <= resp.status_code < 300:
-        if debug:
-            print(f"Mailgun OK: {resp.status_code} {resp.text}")
-        return True
 
-    # Helpful debugging for the exact problem you had
-    print(f"Mailgun send failed: {resp.status_code} {resp.text}")
-    if resp.status_code in (401, 403) and "Invalid private key" in (resp.text or ""):
-        print("Hint: Your API key is being rejected. Double-check MAILGUN_API_KEY and MAILGUN_API_BASE_URL.")
-        print("Your working curl used: https://api.mailgun.net (NOT api.eu.mailgun.net).")
-
-    return False
-
-# --------------------------------------------------
+# -----------------------------
 # Main
-# --------------------------------------------------
+# -----------------------------
 
 def main():
+    print(">>> run.py starting")
+
     world = fetch_world_stories(limit=3)
+    if not world:
+        # Fail-safe so we never end up sending an empty email
+        world = [{
+            "source": "System",
+            "title": "World headlines temporarily unavailable",
+            "summary": "Your feeds didn’t return stories this run. Check WORLD_FEEDS or RSS availability.",
+            "url": "",
+            "reader_url": "",
+        }]
 
+    try:
+        weather, sun = get_cardiff_weather_and_sun()
+    except Exception:
+        weather, sun = ({"location": "Cardiff", "temp": "", "feels": "", "hi": "", "lo": ""}, {"sunrise": "", "sunset": ""})
+
+    people = get_whos_in_space()
+
+    email_html = build_email_html(
+        world=world,
+        weather=weather,
+        sun=sun,
+        people=people,
+        edition_tag=os.getenv("EDITION_TAG", "v-newspaper-17"),
+    )
+
+    # Debug prints (safe)
     print("World stories:")
-    for s in world:
-        print(f"- [{s['source']}] {s['title']}")
+    for s in world[:3]:
+        print(f"- [{s.get('source','')}] {s.get('title','')}")
+    print("EMAIL_HTML TYPE:", type(email_html))
+    print("EMAIL_HTML LENGTH:", len(email_html) if isinstance(email_html, str) else 0)
 
-    line = edition_line()
-    weather = get_weather_cardiff()
-    sunrise_sunset = get_sun_times()
-    space_people = get_whos_in_space()
-
-    email_html = render_email(
-    world,
-    edition=line,
-    weather=weather,
-    sunrise_sunset=sunrise_sunset,
-    space_people=space_people,
-)
-
-print("EMAIL_HTML TYPE:", type(email_html))
-print("EMAIL_HTML LENGTH:", len(email_html) if isinstance(email_html, str) else 0)
-
-if not isinstance(email_html, str) or not email_html.strip():
-    raise RuntimeError("render_email() returned empty/None HTML")
-    
-    # STEP 4: write a local preview file (only when DEBUG_EMAIL=true)
-    if str(os.getenv("DEBUG_EMAIL", "false")).lower() == "true":
+    # Write preview in debug mode
+    if bool_env("DEBUG_EMAIL", False):
         with open("email_preview.html", "w", encoding="utf-8") as f:
             f.write(email_html)
         print("Wrote email_preview.html")
 
-    subject = f"The 2k Times · {now_utc().strftime('%d.%m.%Y')}"
-
-    if str(os.getenv("SEND_EMAIL", "false")).lower() == "true":
+    # Send / skip
+    if bool_env("SEND_EMAIL", False):
+        subject = f"The 2k Times · {now_local().strftime('%d.%m.%Y')}"
         ok = send_mailgun(subject, email_html)
         if not ok:
             print("Email failed (continuing — cron safe).")
     else:
         print("SEND_EMAIL=false — skipping send")
 
+    print(">>> run.py finished")
+
 
 if __name__ == "__main__":
-    print(">>> run.py starting")
     try:
         main()
-    finally:
-        print(">>> run.py finished")
+    except Exception as ex:
+        # Cron-safe: never crash the job hard
+        print("Fatal error:", repr(ex))
+        sys.exit(0)
