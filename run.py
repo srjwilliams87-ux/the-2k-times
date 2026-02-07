@@ -484,7 +484,7 @@ if people:
         rows.append(f"<div style='margin:0 0 6px 0;'>{name} — {mission} — {dur}</div>")
 
     ppl_html = "".join(rows) if rows else "Unavailable right now."
-    else:
+else:
     ppl_html = "Unavailable right now."
 
 
