@@ -214,69 +214,144 @@ def get_cardiff_weather_and_sun():
 
 def get_whos_in_space():
     """
-    Prefer whosinspace.com; fallback to Open Notify.
-    Returns list of strings like: "Name (ISS)"
+    Mirror whoisinspace.com.
+    Returns list[dict] with:
+      - name: str
+      - mission: str
+      - launched_utc: datetime | None
     """
-    # 1) Try whosinspace.com (endpoint formats can vary; try a few)
-    candidates = [
-        "https://www.whosinspace.com/people-in-space.json",
-        "https://www.whosinspace.com/astronauts.json",
-        "https://www.whosinspace.com/",
-    ]
+    import json
+    import re
+    import datetime as dt
+
     headers = {"User-Agent": "2k-times-bot/1.0"}
 
-    for u in candidates:
+    def _parse_iso_dt(s: str):
+        if not s:
+            return None
+        s = s.strip()
+        # Normalise "Z" -> "+00:00"
+        if s.endswith("Z"):
+            s = s[:-1] + "+00:00"
         try:
-            r = requests.get(u, timeout=15, headers=headers)
-            r.raise_for_status()
-
-            # If it’s JSON, parse it
-            ctype = (r.headers.get("Content-Type") or "").lower()
-            if "json" in ctype or r.text.strip().startswith("{") or r.text.strip().startswith("["):
-                data = r.json()
-                people = []
-
-                # Try common shapes
-                if isinstance(data, dict):
-                    if "people" in data and isinstance(data["people"], list):
-                        for p in data["people"]:
-                            name = (p.get("name") or "").strip()
-                            craft = (p.get("craft") or p.get("station") or "").strip()
-                            if name:
-                                people.append(f"{name} ({craft or 'Space'})")
-                    elif "astronauts" in data and isinstance(data["astronauts"], list):
-                        for p in data["astronauts"]:
-                            name = (p.get("name") or "").strip()
-                            craft = (p.get("craft") or p.get("station") or "").strip()
-                            if name:
-                                people.append(f"{name} ({craft or 'Space'})")
-                elif isinstance(data, list):
-                    for p in data:
-                        if isinstance(p, dict):
-                            name = (p.get("name") or "").strip()
-                            craft = (p.get("craft") or p.get("station") or "").strip()
-                            if name:
-                                people.append(f"{name} ({craft or 'Space'})")
-
-                if people:
-                    return people
+            d = dt.datetime.fromisoformat(s)
+            if d.tzinfo is None:
+                d = d.replace(tzinfo=dt.timezone.utc)
+            return d.astimezone(dt.timezone.utc)
         except Exception:
-            pass
+            return None
 
-    # 2) Fallback: Open Notify
+    # 1) Source of truth: whoisinspace.com page (Next.js)
     try:
-        r = requests.get("http://api.open-notify.org/astros.json", timeout=15)
+        r = requests.get("https://whoisinspace.com/", timeout=20, headers=headers)
         r.raise_for_status()
-        data = r.json()
+        html = r.text
+
+        # Next.js embeds JSON in a script tag with id="__NEXT_DATA__"
+        m = re.search(r'<script[^>]+id="__NEXT_DATA__"[^>]*>(.*?)</script>', html, re.S)
+        if not m:
+            raise RuntimeError("whoisinspace.com: __NEXT_DATA__ not found")
+
+        next_data = json.loads(m.group(1))
+
+        # Walk the JSON and collect likely person entries.
+        # We keep this flexible because the internal shape can change.
         people = []
+
+        def walk(obj):
+            if isinstance(obj, dict):
+                # Heuristic: "name" plus something mission-like
+                name = obj.get("name") or obj.get("person") or obj.get("astronaut")
+                # mission keys vary
+                mission = (
+                    obj.get("mission")
+                    or obj.get("expedition")
+                    or obj.get("vehicle")
+                    or obj.get("craft")
+                    or obj.get("station")
+                )
+                # launch keys vary
+                launched = (
+                    obj.get("launched")
+                    or obj.get("launchDate")
+                    or obj.get("launch_date")
+                    or obj.get("launch")
+                    or obj.get("launchTime")
+                    or obj.get("launch_time")
+                )
+
+                if isinstance(name, str) and name.strip():
+                    # Mission might be nested or missing; keep it printable
+                    mission_str = ""
+                    if isinstance(mission, str):
+                        mission_str = mission.strip()
+                    elif isinstance(mission, dict):
+                        # sometimes mission is {"name": "..."} etc.
+                        mission_str = (mission.get("name") or mission.get("title") or "").strip()
+
+                    launched_dt = None
+                    if isinstance(launched, str):
+                        launched_dt = _parse_iso_dt(launched)
+                    elif isinstance(launched, (int, float)):
+                        # sometimes epoch seconds/ms
+                        ts = float(launched)
+                        if ts > 10_000_000_000:  # ms
+                            ts = ts / 1000.0
+                        launched_dt = dt.datetime.fromtimestamp(ts, tz=dt.timezone.utc)
+
+                    # Only accept if it looks like a real roster entry:
+                    # name + any mission/station/craft hint
+                    if mission_str or launched_dt is not None or obj.get("country") or obj.get("agency"):
+                        people.append(
+                            {
+                                "name": name.strip(),
+                                "mission": mission_str or "Space mission",
+                                "launched_utc": launched_dt,
+                            }
+                        )
+
+                for v in obj.values():
+                    walk(v)
+
+            elif isinstance(obj, list):
+                for it in obj:
+                    walk(it)
+
+        walk(next_data)
+
+        # De-duplicate by name+mission
+        seen = set()
+        deduped = []
+        for p in people:
+            key = (p.get("name", ""), p.get("mission", ""))
+            if key in seen:
+                continue
+            seen.add(key)
+            deduped.append(p)
+
+        if deduped:
+            return deduped
+
+        raise RuntimeError("whoisinspace.com: parsed but no people found")
+
+    except Exception:
+        pass
+
+    # 2) Fallback: Open Notify (no mission/duration available)
+    try:
+        r = requests.get("http://api.open-notify.org/astros.json", timeout=15, headers=headers)
+        r.raise_for_status()
+        data = r.json() or {}
+        out = []
         for p in data.get("people", []) or []:
             name = (p.get("name") or "").strip()
-            craft = (p.get("craft") or "").strip()
+            craft = (p.get("craft") or "Space").strip()
             if name:
-                people.append(f"{name} ({craft or 'Space'})")
-        return people
+                out.append({"name": name, "mission": craft, "launched_utc": None})
+        return out
     except Exception:
         return []
+
 
 
 # -----------------------------
@@ -376,11 +451,42 @@ def build_email_html(world, weather, sun, people, edition_tag="v-newspaper-17") 
       <div>Sunrise: <b>{e(s.get('sunrise'))}</b> &nbsp;·&nbsp; Sunset: <b>{e(s.get('sunset'))}</b></div>
     """
 
-    # Who’s in space
+    # Who's in space (mirror whoisinspace.com: mission + time on mission)
     if people:
-        ppl_html = "<br/>".join(e(p) for p in people)
+    # people is expected to be list[dict] with: name, mission, launched_utc
+    now = dt.datetime.now(dt.timezone.utc)
+
+    def _fmt_duration(delta: dt.timedelta) -> str:
+        total = int(delta.total_seconds())
+        if total < 0:
+            total = 0
+        days = total // 86400
+        hours = (total % 86400) // 3600
+        mins = (total % 3600) // 60
+        if days >= 1:
+            return f"{days}d {hours:02d}h"
+        if hours >= 1:
+            return f"{hours}h {mins:02d}m"
+        return f"{mins}m"
+
+    rows = []
+    for p in people:
+        name = e(p.get("name", ""))
+        mission = e(p.get("mission", ""))
+        launched = p.get("launched_utc")
+
+        dur = "—"
+        if isinstance(launched, dt.datetime):
+            if launched.tzinfo is None:
+                launched = launched.replace(tzinfo=dt.timezone.utc)
+            dur = _fmt_duration(now - launched)
+
+        rows.append(f"<div style='margin:0 0 6px 0;'>{name} — {mission} — {dur}</div>")
+
+    ppl_html = "".join(rows) if rows else "Unavailable right now."
     else:
-        ppl_html = "Unavailable right now."
+    ppl_html = "Unavailable right now."
+
 
     right_col = (
         render_box("🔎 Inside today", inside_html)
