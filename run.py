@@ -452,7 +452,7 @@ def build_email_html(world, weather, sun, people, edition_tag="v-newspaper-17") 
     """
 
     # Who's in space (mirror whoisinspace.com: mission + time on mission)
-    if people:
+if people:
     # people is expected to be list[dict] with: name, mission, launched_utc
     now = dt.datetime.now(dt.timezone.utc)
 
