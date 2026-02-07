@@ -576,7 +576,7 @@ else:
 </body>
 </html>
 """
-    return html_out
+return html_out
 
 
 # -----------------------------
