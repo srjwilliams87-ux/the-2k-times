@@ -307,13 +307,13 @@ def render_story(story, idx: int) -> str:
               <div style="font-size:12px; letter-spacing:0.08em; text-transform:uppercase; opacity:0.75; margin-bottom:10px;">
                 TOP STORY
               </div>
-              <div style="font-size:26px; line-height:1.15; font-weight:800; margin:0 0 10px 0;">
+              <div style="font-size:22px; line-height:1.15; font-weight:800; margin:0 0 10px 0;">
                 {idx}. {title}
               </div>
-              <div style="font-size:16px; line-height:1.55; opacity:0.9; margin-bottom:12px;">
+              <div style="font-size:14px; line-height:1.55; opacity:0.9; margin-bottom:12px;">
                 {summary}
               </div>
-              <div style="font-size:18px;">
+              <div style="font-size:16px;">
                 {link_html}
               </div>
             </div>
@@ -324,13 +324,13 @@ def render_story(story, idx: int) -> str:
     # Normal stories
     return f"""
     <div style="padding:18px 0; border-bottom:1px solid rgba(255,255,255,0.08);">
-      <div style="font-size:24px; line-height:1.15; font-weight:800; margin:0 0 10px 0;">
+      <div style="font-size:20px; line-height:1.15; font-weight:800; margin:0 0 10px 0;">
         {idx}. {title}
       </div>
-      <div style="font-size:16px; line-height:1.55; opacity:0.9; margin-bottom:12px;">
+      <div style="font-size:14px; line-height:1.55; opacity:0.9; margin-bottom:12px;">
         {summary}
       </div>
-      <div style="font-size:18px;">
+      <div style="font-size:16px;">
         {link_html}
       </div>
     </div>
@@ -425,7 +425,7 @@ def build_email_html(world, weather, sun, people, edition_tag="v-newspaper-17") 
       <table role="presentation" width="680" cellspacing="0" cellpadding="0" border="0"
              style="max-width:680px; background:#15171c; border-radius:14px; border:1px solid rgba(255,255,255,0.08);">
         <tr>
-          <td style="padding:26px 18px;">
+          <td style="padding:26px 18px; font-size:14px; line-height:1.5;">
           
     <div style="text-align:center; margin-bottom:18px;">
       <div style="font-size:64px; font-weight:900; letter-spacing:-0.02em;">The 2k Times</div>
