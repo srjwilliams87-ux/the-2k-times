@@ -340,10 +340,10 @@ def render_story(story, idx: int) -> str:
 def render_box(title: str, body_html: str) -> str:
     return f"""
     <div style="padding:16px 0; border-bottom:1px solid rgba(255,255,255,0.08);">
-      <div style="font-size:18px; font-weight:800; margin-bottom:10px; display:flex; align-items:center; gap:10px;">
+      <div style="font-size:16px; font-weight:800; margin-bottom:10px; display:flex; align-items:center; gap:10px;">
         {title}
       </div>
-      <div style="font-size:16px; line-height:1.5; opacity:0.95;">
+      <div style="font-size:14px; line-height:1.5; opacity:0.95;">
         {body_html}
       </div>
     </div>
