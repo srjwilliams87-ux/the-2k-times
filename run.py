@@ -497,86 +497,86 @@ else:
 
     # Whole email
     html_out = f"""<!doctype html>
-<html>
-<head>
-<meta charset="utf-8"/>
-<meta name="viewport" content="width=device-width, initial-scale=1"/>
-<title>The 2k Times</title>
-
-<style>
-/* Mobile stacking */
-@media screen and (max-width: 600px) {{
-  .col-stack {{
-    display: block !important;
-    width: 100% !important;
-    max-width: 100% !important;
-  }}
-
-  .rule-vert {{
-    display: none !important;
-  }}
-
-  .pad-reset {{
-    padding-left: 0 !important;
-    padding-right: 0 !important;
-  }}
-}}
-</style>
-
-</head>
-<body style="margin:0; padding:0; background:#0f1115; color:#f2f2f2; font-family: Arial, Helvetica, sans-serif;">
-<table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="background:#0f1115;">
-  <tr>
-    <td align="center" style="padding:24px 12px;">
-      <table role="presentation" width="680" cellspacing="0" cellpadding="0" border="0"
-             style="max-width:680px; background:#15171c; border-radius:14px; border:1px solid rgba(255,255,255,0.08);">
-        <tr>
-          <td style="padding:26px 18px; font-size:14px; line-height:1.5;">
-          
-    <div style="text-align:center; margin-bottom:18px;">
-      <div style="font-size:64px; font-weight:900; letter-spacing:-0.02em;">The 2k Times</div>
-      <div style="margin-top:10px; font-size:18px; opacity:0.9;">{e(edition_line)}</div>
-    </div>
-
-    <div style="height:1px; background:rgba(255,255,255,0.12); margin:18px 0 22px;"></div>
-
-    <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0">
-  <tr>
-    <!-- Left column -->
-    <td valign="top" width="64%"
-    class="col-stack pad-reset"
-    style="width:64%; padding-right:16px;">
-  {stories_html}
-</td>
-
-    <!-- Vertical divider -->
-    <td valign="top" width="1"
-    class="rule-vert"
-    style="width:1px; background:rgba(255,255,255,0.12); font-size:0; line-height:0;">
-&nbsp;
-</td>
-
-    <!-- Right column -->
-    <td valign="top" width="36%"
-    class="col-stack pad-reset"
-    style="width:36%; padding-left:16px;">
-  {right_col}
-</td>
-
-    <div style="height:1px; background:rgba(255,255,255,0.12); margin:22px 0 14px;"></div>
-    <div style="font-size:12px; opacity:0.65;">
-      You’re receiving this because you subscribed to The 2k Times.
-    </div>
-          </td>
-        </tr>
-      </table>
+    <html>
+    <head>
+    <meta charset="utf-8"/>
+    <meta name="viewport" content="width=device-width, initial-scale=1"/>
+    <title>The 2k Times</title>
+    
+    <style>
+    /* Mobile stacking */
+    @media screen and (max-width: 600px) {{
+      .col-stack {{
+        display: block !important;
+        width: 100% !important;
+        max-width: 100% !important;
+      }}
+    
+      .rule-vert {{
+        display: none !important;
+      }}
+    
+      .pad-reset {{
+        padding-left: 0 !important;
+        padding-right: 0 !important;
+      }}
+    }}
+    </style>
+    
+    </head>
+    <body style="margin:0; padding:0; background:#0f1115; color:#f2f2f2; font-family: Arial, Helvetica, sans-serif;">
+    <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="background:#0f1115;">
+      <tr>
+        <td align="center" style="padding:24px 12px;">
+          <table role="presentation" width="680" cellspacing="0" cellpadding="0" border="0"
+                 style="max-width:680px; background:#15171c; border-radius:14px; border:1px solid rgba(255,255,255,0.08);">
+            <tr>
+              <td style="padding:26px 18px; font-size:14px; line-height:1.5;">
+              
+        <div style="text-align:center; margin-bottom:18px;">
+          <div style="font-size:64px; font-weight:900; letter-spacing:-0.02em;">The 2k Times</div>
+          <div style="margin-top:10px; font-size:18px; opacity:0.9;">{e(edition_line)}</div>
+        </div>
+    
+        <div style="height:1px; background:rgba(255,255,255,0.12); margin:18px 0 22px;"></div>
+    
+        <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0">
+      <tr>
+        <!-- Left column -->
+        <td valign="top" width="64%"
+        class="col-stack pad-reset"
+        style="width:64%; padding-right:16px;">
+      {stories_html}
     </td>
-  </tr>
-</table>
-</body>
-</html>
-"""
-return html_out
+    
+        <!-- Vertical divider -->
+        <td valign="top" width="1"
+        class="rule-vert"
+        style="width:1px; background:rgba(255,255,255,0.12); font-size:0; line-height:0;">
+    &nbsp;
+    </td>
+    
+        <!-- Right column -->
+        <td valign="top" width="36%"
+        class="col-stack pad-reset"
+        style="width:36%; padding-left:16px;">
+      {right_col}
+    </td>
+    
+        <div style="height:1px; background:rgba(255,255,255,0.12); margin:22px 0 14px;"></div>
+        <div style="font-size:12px; opacity:0.65;">
+          You’re receiving this because you subscribed to The 2k Times.
+        </div>
+              </td>
+            </tr>
+          </table>
+        </td>
+      </tr>
+    </table>
+    </body>
+    </html>
+    """
+    return html_out
 
 
 # -----------------------------
